@@ -1292,6 +1292,32 @@ endif()
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
+#------------ Formaylity begin -------------------
+# dsy
+
+link_directories(
+		/home/dengshy/github/BuDDy/install/lib
+		/home/dengshy/github/klee/build/lib
+)
+
+link_libraries(
+		bdd
+		kleaverExpr
+		kleaverSolver
+		kleeBasic
+		kleeCore
+		kleeModule
+		kleeSupport
+		kleeRuntest
+)
+
+include_directories(
+		/home/dengshy/github/BuDDy/install/include
+    /home/dengshy/github/llvm-project/llvm/include/klee
+)
+
+#------------ Formaylity end   -------------------
+
 include_directories( ${LLVM_INCLUDE_DIR} ${LLVM_MAIN_INCLUDE_DIR})
 
 # when crosscompiling import the executable targets from a file
