@@ -110,10 +110,15 @@ BddBranchRecord::~BddBranchRecord() {
 
 TranslateToStpPass::TranslateToStpPass() {
   bddBR = new BddBranchRecord();
+  exprBuilder = std::make_unique<klee::ExprBuilder>(klee::createDefaultExprBuilder());
+  vc = vc_createValidityChecker();
+  stpBuilder = new klee::StpBuilder(vc);
 }
 
 TranslateToStpPass::~TranslateToStpPass() {
   delete bddBR;
+  vc_Destroy(vc);
+  delete stpBuilder;
 }
 
 // Move the helper functions from anonymous namespace to class methods
@@ -123,6 +128,8 @@ PreservedAnalyses TranslateToStpPass::run(Function &F,
   std::cout << "TranslateToStp pass is running \n";
 
   _F = &F;
+  dataLayout = &(_F->getDataLayout());
+
   bddBR->collectBranchInfo(_F);
 
   getOutputPort();
@@ -276,7 +283,7 @@ Instruction* TranslateToStpPass::findStoreInstFromBasicBlock(BasicBlock &bb, Val
 void TranslateToStpPass::getOutputKleeExpr() {
 
   for (auto &it: output) {
-    
+    outputKleeExpr[it.first] = translateInst(it.second); 
   }
 
 }
@@ -284,6 +291,239 @@ void TranslateToStpPass::getOutputKleeExpr() {
 /**
  * @note 
  */
-void TranslateToStpPass::translateInst(Value *v) {
+kleeExpr TranslateToStpPass::translateInst(Value *v) {
+  kleeExpr guard = exprBuilder->Constant(1, klee::Expr::Bool);
+  kleeExpr offset = exprBuilder->Constant(0, klee::Expr::Int32);
   
+  kleeExpr ret = translateRecursion(v, guard, offset);
+
+  return ret;
+}
+
+kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeExpr offset) {
+  if (valueToKleeExprCache.count(v)) {
+    return valueToKleeExprCache[v];
+  }
+
+  kleeExpr ret = nullptr;
+
+  if (auto *constantInst = dyn_cast<ConstantInt>(v)) {
+    ret = exprBuilder->Constant(constantInst->getSExtValue(), 
+                            constantInst->getType()->getPrimitiveSizeInBits());
+  }
+  else if (auto *callInst = dyn_cast<CallInst>(v)) {
+    // TODO:
+    errs() << "need to process CallInst: \n";
+    callInst->dump();
+    errs() << "\n";
+  }
+  else if (isa<Argument>(v)) {
+    // TODO:
+    errs() << "need to process Argument inst: \n";
+    v->dump();
+    errs() << "\n";
+  }
+  else if (isa<GlobalVariable>(v)) {
+    // TODO:
+    errs() << "need to process GlobalVariable inst: \n";
+    v->dump();
+    errs() << "\n";
+  }
+  else if (auto *inst = dyn_cast<Instruction>(v)) {
+    // process instruction
+    switch (inst->getOpcode()) {
+      case Instruction::Add:
+      case Instruction::Sub:
+      case Instruction::Mul:
+      case Instruction::UDiv:
+      case Instruction::SDiv: {
+        kleeExpr left = translateRecursion(inst->getOperand(0), guard, offset);
+        kleeExpr right = translateRecursion(inst->getOperand(1), guard, offset);
+        switch (inst->getOpcode()) {
+          case Instruction::Add:
+            ret = exprBuilder->Add(left, right);
+            break;
+          case Instruction::Sub:
+            ret = exprBuilder->Sub(left, right);
+            // klee::SubExpr::create(left, right);
+            break;
+          case Instruction::Mul:
+            ret = exprBuilder->Mul(left, right);
+            break;
+          case Instruction::UDiv:
+            ret = exprBuilder->UDiv(left, right);
+            break;
+          case Instruction::SDiv:
+            ret = exprBuilder->SDiv(left, right);
+            break;
+          default:
+            assert(false && "Unsupported arithmetic operation");
+        }
+        break;
+      }
+      case Instruction::ICmp: {
+        auto *icmpInst = dyn_cast<ICmpInst>(inst);
+        kleeExpr left = translateRecursion(icmpInst->getOperand(0), guard, offset);
+        kleeExpr right = translateRecursion(icmpInst->getOperand(1), guard, offset);
+        switch (icmpInst->getPredicate()) {
+          case ICmpInst::ICMP_EQ:
+            ret = exprBuilder->Eq(left, right);
+            break;
+          case ICmpInst::ICMP_NE:
+            ret = exprBuilder->Ne(left, right);
+            break;
+          case ICmpInst::ICMP_SLT:
+            ret = exprBuilder->Slt(left, right);
+            break;
+          case ICmpInst::ICMP_SLE:
+            ret = exprBuilder->Sle(left, right);
+            break;
+          case ICmpInst::ICMP_SGT:
+            ret = exprBuilder->Sgt(left, right);
+            break;
+          case ICmpInst::ICMP_SGE:
+            ret = exprBuilder->Sge(left, right);
+            break;
+          case ICmpInst::ICMP_ULT:
+            ret = exprBuilder->Ult(left, right);
+            break;
+          case ICmpInst::ICMP_ULE:
+            ret = exprBuilder->Ule(left, right);
+            break;
+          case ICmpInst::ICMP_UGT:
+            ret = exprBuilder->Ugt(left, right);
+            break;
+          case ICmpInst::ICMP_UGE:
+            ret = exprBuilder->Uge(left, right);
+            break;
+          default:
+            assert(false && "Unsupported ICmp predicate");
+        }
+        break;
+      }
+      // case Instruction::Not: {
+      //   kleeExpr operand = translateRecursion(inst->getOperand(0), guard, offset);
+      //   ret = exprBuilder->Not(operand);
+      //   break;
+      // }
+      case Instruction::And:
+      case Instruction::Or:
+      case Instruction::Xor:
+      case Instruction::Shl:
+      case Instruction::LShr:
+      case Instruction::AShr: {
+        kleeExpr left = translateRecursion(inst->getOperand(0), guard, offset);
+        kleeExpr right = translateRecursion(inst->getOperand(1), guard, offset);
+        switch (inst->getOpcode()) {
+          case Instruction::And:
+            ret = exprBuilder->And(left, right);
+            break;
+          case Instruction::Or:
+            ret = exprBuilder->Or(left, right);
+            break;
+          case Instruction::Xor:
+            ret = exprBuilder->Xor(left, right);
+            break;
+          case Instruction::Shl:
+            ret = exprBuilder->Shl(left, right);
+            break;
+          case Instruction::LShr:
+            ret = exprBuilder->LShr(left, right);
+            break;
+          case Instruction::AShr:
+            ret = exprBuilder->AShr(left, right);
+            break;
+          default:
+            assert(false && "Unsupported bitwise operation");
+        }
+        break;
+      }
+      case Instruction::ZExt:
+      case Instruction::Trunc:
+      case Instruction::SExt: {
+        auto *castInst = dyn_cast<CastInst>(inst);
+        kleeExpr operand = translateRecursion(castInst->getOperand(0), guard, offset);
+        unsigned toWidth = castInst->getType()->getPrimitiveSizeInBits();
+        switch (inst->getOpcode()) {
+          case Instruction::Trunc:
+            // FIXME: is this correct about the trunc operation ?
+            ret = exprBuilder->Extract(operand, 0, toWidth);
+            break;
+          case Instruction::ZExt:
+            ret = exprBuilder->ZExt(operand, toWidth);
+            break;
+          case Instruction::SExt:
+            ret = exprBuilder->SExt(operand, toWidth);
+            break;
+          default:
+            assert(false && "Unsupported cast operation");
+        }
+        break;
+    }
+    case Instruction::Alloca: {
+      auto allocaInst = dyn_cast<AllocaInst>(inst);
+      break; 
+    }
+    case Instruction::Store: {
+      // Store instruction, we can ignore it for now
+      // because we are not interested in the store value.
+      // But we can process the pointer operand if needed.  -- ai
+      auto *storeInst = dyn_cast<StoreInst>(inst);
+      Value *ptr = storeInst->getPointerOperand();
+      ret = translateRecursion(ptr, guard, offset);
+      break;
+    }
+    case Instruction::Load: {
+
+    }
+  }
+}
+
+
+void TranslateToStpPass::translateOutputToStp() {
+  FILE fd = fopen("outputStpExpr.txt", "w");
+
+  if (!fd) {
+    errs() << "file doesnot open\n";
+    return ;
+  }
+
+  for (auto &it: outputKleeExpr) {
+    Value *v = it.first;
+    kleeExpr e = it.second;
+
+    // Get the bit-width of the value
+    unsigned bitWidth = 0;
+    if (auto *inst = dyn_cast<Instruction>(v)) {
+      bitWidth = inst->getType()->getPrimitiveSizeInBits();
+    } else if (auto *arg = dyn_cast<Argument>(v)) {
+      bitWidth = arg->getType()->getPrimitiveSizeInBits();
+    } else if (auto *globalVar = dyn_cast<GlobalVariable>(v)) {
+      bitWidth = globalVar->getType()->getPrimitiveSizeInBits();
+    } else {
+      errs() << "Unsupported Value type for STP translation\n";
+      continue;
+    }
+
+    // Convert Klee expression to STP expression
+    ExprHandle stpExpr = stpBuilder->construct(e);
+
+    // Declare a new STP variable for the output
+    std::string varName = v->getName().str();
+    ExprHandle stpVar = vc_varExpr(vc, varName.c_str(), vc_bvType(vc, bitWidth));
+
+    // Assert equality between the STP variable and the translated expression
+    ExprHandle equality = vc_eqExpr(vc, stpVar, stpExpr);
+    vc_assertFormula(vc, equality);
+
+    vc_printExprFile(vc, fd, equality);
+
+    // For debugging: print the STP variable and its corresponding expression
+    errs() << "STP Variable: " << varName << "\n";
+    errs() << "Corresponding STP Expression: ";
+    vc_printExpr(vc, stpExpr);
+    errs() << "\n";
+  }
+
+  fd->close();
 }

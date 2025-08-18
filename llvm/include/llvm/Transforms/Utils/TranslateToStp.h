@@ -16,11 +16,16 @@
 #include "klee/Expr/ExprBuilder.h"
 
 #include "bdd.h"
+#include "klee/Expr/Expr.h"
+#include "klee/Solver/StpBuilder.h"
+// FIXME: need to change the include path to the correct one
+#include <stp/c_interface.h>
 
 #include <map>
 #include <vector>
 
 namespace llvm {
+    typedef klee::ref<klee::Expr> kleeExpr;
     /**
      * Use bdd to record the path conditions of basic blocks.
      */
@@ -46,17 +51,28 @@ namespace llvm {
       ~TranslateToStpPass();
       
       void getOutputPort();
+      void translateOutputToStp();
       Instruction* findStoreInstFromBasicBlock(BasicBlock &bb, Value *v);
       StringRef getStringFromValue(Value *v);
       void getOutputKleeExpr();
-      void translateInst(Value *v);
-
+      kleeExpr translateInst(Value *v);
+      kleeExpr translateRecursion(Value *v, kleeExpr guard, kleeExpr offset);
     private:
       Function *_F;
+      const DataLayout *dataLayout;
       // key is PO, value is the logic of PO
       std::map<Value*, Value*> output;
-      BddBranchRecord *bddBR;
+      std::unordered_map<Value*, kleeExpr> outputKleeExpr;
 
+      std::unique_ptr<klee::ExprBuilder> exprBuilder;
+      // Cache for translated Klee expressions  
+
+      BddBranchRecord *bddBR;
+      std::unordered_map<Value*, kleeExpr> valueToKleeExprCache;
+
+      VC vc;
+      klee::StpBuilder *stpBuilder;
+      
     };
 
 } // namespace llvm
