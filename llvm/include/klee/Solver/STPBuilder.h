@@ -17,7 +17,9 @@
 #include <vector>
 
 #define Expr VCExpr
+#define Type VCType
 #include <stp/c_interface.h>
+#undef Type
 #undef Expr
 
 namespace klee {

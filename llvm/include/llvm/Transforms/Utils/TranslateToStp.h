@@ -17,19 +17,21 @@
 
 #include "bdd.h"
 #include "klee/Expr/Expr.h"
-#include "klee/Solver/StpBuilder.h"
-// FIXME: need to change the include path to the correct one
-#include <stp/c_interface.h>
+#include "klee/Expr/ArrayCache.h"
+#include "klee/Solver/STPBuilder.h"
 
 #include <map>
 #include <vector>
+#include <unordered_map>
 
 namespace llvm {
+    void printValue(Value *v, StringRef s);
     typedef klee::ref<klee::Expr> kleeExpr;
     /**
      * Use bdd to record the path conditions of basic blocks.
      */
     class BddBranchRecord {
+      friend class TranslateToStpPass;
     public:
       BddBranchRecord();
       ~BddBranchRecord();
@@ -46,10 +48,12 @@ namespace llvm {
 
     class TranslateToStpPass : public PassInfoMixin<TranslateToStpPass> {
     public:
-    	PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
+      PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
       TranslateToStpPass();
       ~TranslateToStpPass();
-      
+      TranslateToStpPass(TranslateToStpPass&& other) noexcept;
+      TranslateToStpPass& operator=(TranslateToStpPass&& other) noexcept;
+
       void getOutputPort();
       void translateOutputToStp();
       Instruction* findStoreInstFromBasicBlock(BasicBlock &bb, Value *v);
@@ -57,6 +61,10 @@ namespace llvm {
       void getOutputKleeExpr();
       kleeExpr translateInst(Value *v);
       kleeExpr translateRecursion(Value *v, kleeExpr guard, kleeExpr offset);
+      kleeExpr convertBddToKleeExpr(bdd node);
+      kleeExpr getGuardForValue(Value *v);
+      void printSMTExpr(kleeExpr e, raw_ostream &os,
+                        const std::unordered_map<std::string, unsigned> &varWidths);
     private:
       Function *_F;
       const DataLayout *dataLayout;
@@ -65,14 +73,36 @@ namespace llvm {
       std::unordered_map<Value*, kleeExpr> outputKleeExpr;
 
       std::unique_ptr<klee::ExprBuilder> exprBuilder;
-      // Cache for translated Klee expressions  
+      // Cache for translated Klee expressions
 
-      BddBranchRecord *bddBR;
+      std::unique_ptr<BddBranchRecord> bddBR;
       std::unordered_map<Value*, kleeExpr> valueToKleeExprCache;
 
       VC vc;
-      klee::StpBuilder *stpBuilder;
-      
+      klee::STPBuilder *stpBuilder;
+
+      // Memory model
+      std::unique_ptr<klee::ArrayCache> arrayCache;
+      std::unordered_map<Value*, const klee::Array*> memoryArrays;
+      std::unordered_map<Value*, std::unique_ptr<klee::UpdateList>> memoryUpdateLists;
+
+      // Value to basic block mapping for BDD guard lookup
+      std::unordered_map<Value*, BasicBlock*> valueToBlock;
+
+      // Output names from registerOutput(name, ptr, size)
+      std::unordered_map<Value*, std::string> outputNames;
+      // Input names from registerInput(name, ptr, size): maps alloca → name
+      std::unordered_map<Value*, std::string> inputNames;
+
+      // Symbolic variables for arguments and globals
+      std::unordered_map<Argument*, kleeExpr> argumentExprs;
+      std::unordered_map<GlobalVariable*, kleeExpr> globalVarExprs;
+
+      // BDD-to-KLEE memoization cache
+      std::unordered_map<int, kleeExpr> bddToKleeCache;
+
+      // Symbolic variable index for unnamed values
+      unsigned symbolicVarIndex = 0;
     };
 
 } // namespace llvm

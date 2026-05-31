@@ -1298,6 +1298,7 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON)
 link_directories(
 		/home/dengshy/github/BuDDy/install/lib
 		/home/dengshy/github/klee/build/lib
+    /home/dengshy/github/stp/build/lib
 )
 
 link_libraries(
@@ -1309,11 +1310,13 @@ link_libraries(
 		kleeModule
 		kleeSupport
 		kleeRuntest
+		stp
 )
 
 include_directories(
 		/home/dengshy/github/BuDDy/install/include
     /home/dengshy/github/llvm-project/llvm/include/klee
+    /home/dengshy/github/stp/build/include
 )
 
 #------------ Formaylity end   -------------------
