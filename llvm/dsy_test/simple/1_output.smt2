@@ -5,6 +5,6 @@
 (declare-fun a () (_ BitVec 32))
 (declare-fun b () (_ BitVec 32))
 
-(assert (= c (ite (ite (bvslt #x00000000 a) #x0 (ite (bvslt #x00000000 b) #x0 #x1)) #x00000004 (ite (ite (bvslt #x00000000 a) #x0 (ite (bvslt #x00000000 b) #x1 #x0)) #x00000003 (ite (ite (bvslt #x00000000 a) (ite (bvslt #x00000000 b) #x0 #x1) #x0) #x00000002 #x00000001)))))
+(assert (= c (ite (ite (bvslt #x00000000 a) #x0 (ite (bvslt #x00000000 b) #x0 #x1)) #x00000004 (ite (ite (bvslt #x00000000 a) #x0 (ite (bvslt #x00000000 b) #x1 #x0)) #x00000003 (ite (ite (bvslt #x00000000 a) (ite (bvslt #x00000000 b) #x0 #x1) #x0) #x00000002 (ite (ite (bvslt #x00000000 a) (ite (bvslt #x00000000 b) #x1 #x0) #x0) #x00000001 #x00000000))))))
 
 (check-sat)

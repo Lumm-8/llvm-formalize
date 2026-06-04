@@ -93,6 +93,8 @@ namespace llvm {
       std::unordered_map<Value*, std::string> outputNames;
       // Input names from registerInput(name, ptr, size): maps alloca → name
       std::unordered_map<Value*, std::string> inputNames;
+      // Input sizes in bytes from registerInput's third argument
+      std::unordered_map<Value*, unsigned> inputSizes;
 
       // Symbolic variables for arguments and globals
       std::unordered_map<Argument*, kleeExpr> argumentExprs;

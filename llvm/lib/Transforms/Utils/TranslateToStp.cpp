@@ -254,14 +254,20 @@ void TranslateToStpPass::getOutputPort() {
               if (auto *bitCast = dyn_cast<BitCastInst>(ptr))
                 origin = bitCast->getOperand(0);
 
-              // TODO: Need to change to find the store instruction related to it.
-              // Because the current processing method may cause the origin to not be the allocaInst instruction.
-              auto *allocaInst = dyn_cast<AllocaInst>(origin);
-              if (!allocaInst) {
-                errs() << "Warning: registerOutput ptr is not an alloca\n";
+              // Determine the pointed-to type and base for the output load
+              Type *loadType = nullptr;
+              if (auto *allocaInst = dyn_cast<AllocaInst>(origin)) {
+                loadType = allocaInst->getAllocatedType();
+              } else if (auto *gepInst = dyn_cast<GetElementPtrInst>(origin)) {
+                // Struct field: getelementptr %Point, ptr %p, 0, fieldIdx
+                loadType = gepInst->getResultElementType();
+              }
+
+              if (!loadType) {
+                errs() << "Warning: registerOutput ptr is not an alloca or GEP\n";
                 continue;
               }
-              Type *type = allocaInst->getAllocatedType();
+              Type *type = loadType;
 
               // Store the user-specified output name for STP output
               std::string name = getStringFromValue(outputName).str();
@@ -272,15 +278,18 @@ void TranslateToStpPass::getOutputPort() {
               output[origin] = load;
             }
             else if (fName.find("registerInput") != StringRef::npos) {
-              // Store the user-specified input name for STP output post-processing
+              // Store the user-specified input name and size
               Value *riName = ci->getArgOperand(0);
               Value *riPtr = ci->getArgOperand(1);
               Value *riOrigin = riPtr;
               if (auto *bc = dyn_cast<BitCastInst>(riPtr))
                 riOrigin = bc->getOperand(0);
               std::string iname = getStringFromValue(riName).str();
-              if (!iname.empty())
+              if (!iname.empty()) {
                 inputNames[riOrigin] = iname;
+                if (auto *sizeCI = dyn_cast<ConstantInt>(ci->getArgOperand(2)))
+                  inputSizes[riOrigin] = (unsigned)sizeCI->getZExtValue();
+              }
             }
           }
         }
@@ -357,6 +366,18 @@ Instruction* TranslateToStpPass::findStoreInstFromBasicBlock(BasicBlock &bb, Val
  * @note Convert the value variable of the output port into a Klee expression
  */
 void TranslateToStpPass::getOutputKleeExpr() {
+  // First pass: translate all output loads to build ITE chains for all
+  // output allocas. This ensures later outputs that read from earlier
+  // outputs get the correct ITE-expressed values.
+  for (auto &it: output) {
+    translateInst(it.second);
+  }
+
+  // Clear the cache so the second pass recomputes now that ITE chains
+  // are available for all output allocas.
+  valueToKleeExprCache.clear();
+
+  // Second pass: translate again and store the final expressions.
   for (auto &it: output) {
     outputKleeExpr[it.first] = translateInst(it.second);
   }
@@ -411,11 +432,22 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
         memoryArrays[ptr] = array;
         memoryUpdateLists.insert_or_assign(ptr, std::make_unique<klee::UpdateList>(array, nullptr));
 
-        // Track the underlying alloca to redirect later loads/stores
+        // Track the underlying alloca/GEP to redirect later loads/stores
         if (auto *bitCast = dyn_cast<BitCastInst>(ptr)) {
           Value *origin = bitCast->getOperand(0);
           memoryArrays[origin] = array;
           memoryUpdateLists.insert_or_assign(origin, std::make_unique<klee::UpdateList>(array, nullptr));
+          // If origin is an alloca (struct base), find GEPs targeting it
+          // at offset 0 and map them to this array (struct field access).
+          if (isa<AllocaInst>(origin)) {
+            for (BasicBlock &sbb : *_F)
+              for (Instruction &si : sbb)
+                if (auto *gep = dyn_cast<GetElementPtrInst>(&si))
+                  if (gep->getPointerOperand() == origin && gep->hasAllZeroIndices()) {
+                    memoryArrays[gep] = array;
+                    memoryUpdateLists.insert_or_assign(gep, std::make_unique<klee::UpdateList>(array, nullptr));
+                  }
+          }
         }
 
         ret = exprBuilder->Constant(0, klee::Expr::Int32);
@@ -680,6 +712,12 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
       }
       case Instruction::Alloca: {
         auto *allocaInst = dyn_cast<AllocaInst>(inst);
+        // If already registered (e.g., via registerInput for struct field),
+        // don't overwrite with a generic byte array.
+        if (memoryUpdateLists.count(allocaInst)) {
+          ret = exprBuilder->Constant(0, klee::Expr::Int32);
+          break;
+        }
         Type *allocatedType = allocaInst->getAllocatedType();
         unsigned allocSize = dataLayout->getTypeAllocSize(allocatedType);
         if (allocSize == 0) allocSize = 1;
@@ -820,14 +858,14 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
           }
         }
 
-        // Lazy initialization: if the alloca hasn't been processed yet,
-        // create its array and translate all preceding stores / registerInput
-        // calls to it. This builds the memory model on demand.
-        if (!memoryUpdateLists.count(basePtr) &&
-            (isa<AllocaInst>(basePtr) || isa<GlobalVariable>(basePtr))) {
+        // Lazy initialization: create arrays for allocas/globals and
+        // process stores/registerInput calls. If the GEP handler already
+        // created a byte array, check if a registerInput should override it.
+        if (isa<AllocaInst>(basePtr) || isa<GlobalVariable>(basePtr)) {
+          bool alreadyExists = memoryUpdateLists.count(basePtr) != 0;
           // First, check for a registerInput call targeting this alloca.
           // If found, use the user-specified name for the symbolic array.
-          bool hasSpecialArray = false;
+          bool hasSpecialArray = alreadyExists;
           for (BasicBlock &bb : *_F) {
             for (Instruction &bbInst : bb) {
               if (auto *ci = dyn_cast<CallInst>(&bbInst)) {
@@ -837,7 +875,12 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
                   Value *riBase = riPtr;
                   if (auto *bc = dyn_cast<BitCastInst>(riPtr))
                     riBase = bc->getOperand(0);
-                  if (riBase == basePtr) {
+                  // Match: direct alloca, or GEP whose base is the alloca
+                  bool matches = (riBase == basePtr);
+                  if (!matches)
+                    if (auto *riGEP = dyn_cast<GetElementPtrInst>(riBase))
+                      matches = (riGEP->getPointerOperand() == basePtr);
+                  if (matches) {
                     translateRecursion(ci, guard, offset);
                     hasSpecialArray = true;
                   }
@@ -845,24 +888,40 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
               }
             }
           }
-          // If this alloca is an output (from registerOutput), create a wide
-          // array like registerInput does, to avoid byte-level concatenation.
-          if (!hasSpecialArray && outputNames.count(basePtr)) {
-            auto *ai = cast<AllocaInst>(basePtr);
-            std::string arrName = outputNames[basePtr];
-            unsigned bitW = dataLayout->getTypeAllocSize(ai->getAllocatedType()) * 8;
+          // Find output name — may be direct or via GEP (struct field).
+          std::string outName;
+          Value *outKey = basePtr;
+          unsigned outBitW = 0;
+          if (outputNames.count(basePtr)) {
+            outName = outputNames[basePtr];
+            if (auto *ai = dyn_cast<AllocaInst>(basePtr))
+              outBitW = dataLayout->getTypeAllocSize(ai->getAllocatedType()) * 8;
+          } else {
+            // Check if any GEP targeting this alloca is an output
+            for (auto &on : outputNames) {
+              if (auto *gep = dyn_cast<GetElementPtrInst>(on.first)) {
+                if (gep->getPointerOperand() == basePtr) {
+                  outName = on.second;
+                        outBitW = gep->getResultElementType()->getPrimitiveSizeInBits();
+                  break;
+                }
+              }
+            }
+          }
+          // If this alloca/GEP is an output, create a wide array.
+          if (!hasSpecialArray && !outName.empty()) {
             const klee::Array *array = arrayCache->CreateArray(
-                arrName, 1, nullptr, nullptr, klee::Expr::Int32, bitW);
-            memoryArrays[basePtr] = array;
+                outName, 1, nullptr, nullptr, klee::Expr::Int32, outBitW);
+            memoryArrays[outKey] = array;
             memoryUpdateLists.insert_or_assign(
-                basePtr, std::make_unique<klee::UpdateList>(array, nullptr));
+                outKey, std::make_unique<klee::UpdateList>(array, nullptr));
             hasSpecialArray = true;
 
             // Build guarded ITE chain for output allocas with stores from
             // multiple basic blocks, using BDD path conditions.
             // Process sequentially so later stores that READ from this
             // alloca see the accumulated ITE from earlier stores.
-            kleeExpr result = exprBuilder->Constant(0, bitW);
+            kleeExpr result = exprBuilder->Constant(0, outBitW);
             for (BasicBlock &bb : *_F) {
               for (Instruction &bbInst : bb) {
                 if (auto *si = dyn_cast<StoreInst>(&bbInst)) {
@@ -884,7 +943,17 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
                     kleeExpr valExpr = translateRecursion(
                         si->getValueOperand(), guard, offset);
                     // Later stores override: ite(g_i, v_i, result)
-                    result = exprBuilder->Select(storeGuard, valExpr, result);
+                    // Skip unnecessary ITE when guard is trivially true
+                    if (storeGuard->getKind() == klee::Expr::Constant) {
+                      auto &apv = static_cast<const klee::ConstantExpr *>(
+                          storeGuard.get())->getAPValue();
+                      if (apv == 1)
+                        result = valExpr;
+                      else
+                        result = exprBuilder->Select(storeGuard, valExpr, result);
+                    } else {
+                      result = exprBuilder->Select(storeGuard, valExpr, result);
+                    }
                   }
                 }
               }
@@ -912,8 +981,15 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
           }
         }
 
-        if (memoryUpdateLists.count(basePtr)) {
-          klee::UpdateList &updates = *memoryUpdateLists.at(basePtr);
+        // For struct field loads via GEP, prefer the GEP's own array
+        // if registered (e.g., registerInput for p.y maps to the GEP %y).
+        Value *memKey = basePtr;
+        if (auto *gepLd = dyn_cast<GetElementPtrInst>(loadInst->getPointerOperand()))
+          if (memoryUpdateLists.count(gepLd))
+            memKey = gepLd;
+
+        if (memoryUpdateLists.count(memKey)) {
+          klee::UpdateList &updates = *memoryUpdateLists.at(memKey);
           unsigned loadBitWidth = loadInst->getType()->getPrimitiveSizeInBits();
           if (loadBitWidth == 0) loadBitWidth = 32;
 
@@ -979,7 +1055,7 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
           Value *indexVal = it.getOperand();
 
           if (it.isStruct()) {
-            auto *structType = cast<StructType>(indexedType);
+            auto *structType = it.getStructType();
             auto *constIdx = dyn_cast<ConstantInt>(indexVal);
             if (constIdx) {
               unsigned structIdx = constIdx->getZExtValue();
@@ -1264,7 +1340,10 @@ void TranslateToStpPass::translateOutputToStp(const std::string &outFileName) {
   // Build a map of variable name → bit-width for SMT-LIB2 declarations.
   std::unordered_map<std::string, unsigned> varWidths;
   for (auto &kv : inputNames) {
-    if (auto *ai = dyn_cast<AllocaInst>(kv.first))
+    // Use the stored size from registerInput(name, ptr, SIZE) if available
+    if (inputSizes.count(kv.first))
+      varWidths[kv.second] = inputSizes[kv.first] * 8;
+    else if (auto *ai = dyn_cast<AllocaInst>(kv.first))
       varWidths[kv.second] = dataLayout->getTypeAllocSize(ai->getAllocatedType()) * 8;
   }
   for (auto &kv : outputNames) {
