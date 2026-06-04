@@ -13,6 +13,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/Module.h"
 #include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SmallString.h"
@@ -212,7 +213,16 @@ PreservedAnalyses TranslateToStpPass::run(Function &F,
 
   getOutputPort();
   getOutputKleeExpr();
-  translateOutputToStp();
+
+  // Derive output filename from the input module name
+  std::string outName = _F->getParent()->getModuleIdentifier();
+  size_t slashPos = outName.find_last_of("/\\");
+  if (slashPos != std::string::npos) outName = outName.substr(slashPos + 1);
+  size_t dotPos = outName.find_last_of('.');
+  if (dotPos != std::string::npos) outName = outName.substr(0, dotPos);
+  outName += "_output.smt2";
+
+  translateOutputToStp(outName);
 
   return PreservedAnalyses::all();
 }
@@ -483,10 +493,46 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
       std::string name = globalVar->getName().str();
       if (name.empty())
         name = "global_" + std::to_string(symbolicVarIndex++);
-      const klee::Array *array = arrayCache->CreateArray(name, size,
-          nullptr, nullptr, klee::Expr::Int32, klee::Expr::Int8);
-      memoryArrays[globalVar] = array;
-      memoryUpdateLists.insert_or_assign(globalVar, std::make_unique<klee::UpdateList>(array, nullptr));
+
+      const klee::Array *array;
+      if (globalVar->hasInitializer()) {
+        // Extract raw bytes from constant initializer
+        auto *init = globalVar->getInitializer();
+        std::vector<unsigned char> rawBytes(size, 0);
+        if (auto *ca = dyn_cast<ConstantArray>(init)) {
+          unsigned byteIdx = 0;
+          for (unsigned i = 0; i < ca->getNumOperands() && byteIdx < size; i++) {
+            if (auto *ci = dyn_cast<ConstantInt>(ca->getOperand(i))) {
+              uint64_t val = ci->getZExtValue();
+              unsigned elemSize = dataLayout->getTypeAllocSize(ci->getType());
+              for (unsigned b = 0; b < elemSize && byteIdx < size; b++, byteIdx++)
+                rawBytes[byteIdx] = (unsigned char)((val >> (b * 8)) & 0xFF);
+            }
+          }
+        } else if (auto *cd = dyn_cast<ConstantDataSequential>(init)) {
+          for (unsigned i = 0; i < cd->getNumElements() && i < size; i++)
+            rawBytes[i] = (unsigned char)(cd->getElementAsInteger(i) & 0xFF);
+        }
+        // Create KLEE ConstantExpr for each byte
+        std::vector<klee::ref<klee::ConstantExpr>> constVals;
+        for (unsigned i = 0; i < size; i++)
+          constVals.push_back(klee::ConstantExpr::alloc(rawBytes[i], klee::Expr::Int8));
+        array = arrayCache->CreateArray(name, size,
+            constVals.data(), constVals.data() + constVals.size(),
+            klee::Expr::Int32, klee::Expr::Int8);
+        // Write each byte as a concrete update so reads find constant values
+        auto ul = std::make_unique<klee::UpdateList>(array, nullptr);
+        for (unsigned i = 0; i < size; i++)
+          ul->extend(klee::ConstantExpr::alloc(i, klee::Expr::Int32),
+                     klee::ConstantExpr::alloc(rawBytes[i], klee::Expr::Int8));
+        memoryArrays[globalVar] = array;
+        memoryUpdateLists.insert_or_assign(globalVar, std::move(ul));
+      } else {
+        array = arrayCache->CreateArray(name, size,
+            nullptr, nullptr, klee::Expr::Int32, klee::Expr::Int8);
+        memoryArrays[globalVar] = array;
+        memoryUpdateLists.insert_or_assign(globalVar, std::make_unique<klee::UpdateList>(array, nullptr));
+      }
 
       // Return the base address (0) for the global pointer
       ret = exprBuilder->Constant(0, klee::Expr::Int32);
@@ -659,9 +705,21 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
         Value *basePtr = ptr;
         kleeExpr byteOffset = exprBuilder->Constant(0, klee::Expr::Int32);
 
+        // Extract base pointer from GEP (instruction or constant expression)
         if (auto *gepInst = dyn_cast<GetElementPtrInst>(ptr)) {
           basePtr = gepInst->getPointerOperand();
           byteOffset = translateRecursion(gepInst, guard, offset);
+        } else if (auto *ce = dyn_cast<ConstantExpr>(ptr)) {
+          if (ce->getOpcode() == Instruction::GetElementPtr) {
+            basePtr = ce->getOperand(0);
+            // Compute byte offset via DataLayout
+            Type *srcTy = cast<GEPOperator>(ce)->getSourceElementType();
+            SmallVector<Value *, 4> indices;
+            for (unsigned idx = 1; idx < ce->getNumOperands(); idx++)
+              indices.push_back(ce->getOperand(idx));
+            uint64_t off = dataLayout->getIndexedOffsetInType(srcTy, indices);
+            byteOffset = exprBuilder->Constant(off, klee::Expr::Int32);
+          }
         }
 
         if (memoryUpdateLists.count(basePtr)) {
@@ -678,8 +736,15 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
 
             // Decompose into byte writes
             for (unsigned i = 0; i < storeSize; i++) {
-              kleeExpr byteIndex = exprBuilder->Add(byteOffset,
-                  exprBuilder->Constant(i, klee::Expr::Int32));
+              kleeExpr byteIndex;
+              if (byteOffset->getKind() == klee::Expr::Constant) {
+                unsigned off = static_cast<const klee::ConstantExpr *>(
+                    byteOffset.get())->getAPValue().getZExtValue();
+                byteIndex = exprBuilder->Constant(off + i, klee::Expr::Int32);
+              } else {
+                byteIndex = exprBuilder->Add(byteOffset,
+                    exprBuilder->Constant(i, klee::Expr::Int32));
+              }
               kleeExpr byteValue;
               if (storeSize == 1 && valExpr->getWidth() <= 8) {
                 byteValue = valExpr;
@@ -703,9 +768,56 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
         Value *basePtr = ptr;
         kleeExpr byteOffset = exprBuilder->Constant(0, klee::Expr::Int32);
 
+        // Extract base pointer from GEP (instruction or constant expression)
         if (auto *gepInst = dyn_cast<GetElementPtrInst>(ptr)) {
           basePtr = gepInst->getPointerOperand();
           byteOffset = translateRecursion(gepInst, guard, offset);
+        } else if (auto *ce = dyn_cast<ConstantExpr>(ptr)) {
+          if (ce->getOpcode() == Instruction::GetElementPtr) {
+            basePtr = ce->getOperand(0);
+            // Compute byte offset via DataLayout
+            Type *srcTy = cast<GEPOperator>(ce)->getSourceElementType();
+            SmallVector<Value *, 4> indices;
+            for (unsigned idx = 1; idx < ce->getNumOperands(); idx++)
+              indices.push_back(ce->getOperand(idx));
+            uint64_t off = dataLayout->getIndexedOffsetInType(srcTy, indices);
+            byteOffset = exprBuilder->Constant(off, klee::Expr::Int32);
+          }
+        }
+
+        // Fast path: constant global variable access — return value directly
+        if (auto *gv = dyn_cast<GlobalVariable>(basePtr)) {
+          if (gv->hasInitializer() && byteOffset->getKind() == klee::Expr::Constant) {
+            uint64_t off = static_cast<const klee::ConstantExpr *>(
+                byteOffset.get())->getAPValue().getZExtValue();
+            unsigned bitWidth = loadInst->getType()->getPrimitiveSizeInBits();
+            if (bitWidth > 0 && off + (bitWidth / 8) <= dataLayout->getTypeAllocSize(gv->getValueType())) {
+              // Read bytes directly from the global initializer
+              uint64_t result = 0;
+              auto *init = gv->getInitializer();
+              // Handle constant arrays of simple integers (ConstantDataArray)
+              if (auto *cds = dyn_cast<ConstantDataSequential>(init)) {
+                Type *elemTy = cds->getElementType();
+                unsigned elemSize = dataLayout->getTypeAllocSize(elemTy);
+                unsigned elemIdx = off / elemSize;
+                unsigned byteInElem = off % elemSize;
+                if (elemIdx < cds->getNumElements() && byteInElem == 0)
+                  result = cds->getElementAsInteger(elemIdx);
+              } else if (auto *ca = dyn_cast<ConstantArray>(init)) {
+                // More complex array types
+                Type *elemTy = ca->getType()->getElementType();
+                unsigned elemSize = dataLayout->getTypeAllocSize(elemTy);
+                unsigned elemIdx = off / elemSize;
+                unsigned byteInElem = off % elemSize;
+                if (elemIdx < ca->getNumOperands() && byteInElem == 0) {
+                  if (auto *ci = dyn_cast<ConstantInt>(ca->getOperand(elemIdx)))
+                    result = ci->getZExtValue();
+                }
+              }
+              ret = exprBuilder->Constant(result, bitWidth);
+              break;
+            }
+          }
         }
 
         // Lazy initialization: if the alloca hasn't been processed yet,
@@ -745,23 +857,59 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
             memoryUpdateLists.insert_or_assign(
                 basePtr, std::make_unique<klee::UpdateList>(array, nullptr));
             hasSpecialArray = true;
+
+            // Build guarded ITE chain for output allocas with stores from
+            // multiple basic blocks, using BDD path conditions.
+            // Process sequentially so later stores that READ from this
+            // alloca see the accumulated ITE from earlier stores.
+            kleeExpr result = exprBuilder->Constant(0, bitW);
+            for (BasicBlock &bb : *_F) {
+              for (Instruction &bbInst : bb) {
+                if (auto *si = dyn_cast<StoreInst>(&bbInst)) {
+                  Value *siPtr = si->getPointerOperand();
+                  Value *siBase = siPtr;
+                  if (auto *gep = dyn_cast<GetElementPtrInst>(siPtr))
+                    siBase = gep->getPointerOperand();
+                  if (siBase == basePtr) {
+                    // Write current ITE so loads from this alloca see it
+                    memoryUpdateLists.at(basePtr)->extend(
+                        exprBuilder->Constant(0, klee::Expr::Int32), result);
+                    // Get guard and translate value (loads from this alloca
+                    // will read the current ITE via the UpdateList)
+                    kleeExpr storeGuard = exprBuilder->True();
+                    if (bddBR->basicBlockBdd.count(&bb)) {
+                      bdd blockBdd = bddBR->basicBlockBdd[&bb];
+                      storeGuard = convertBddToKleeExpr(blockBdd);
+                    }
+                    kleeExpr valExpr = translateRecursion(
+                        si->getValueOperand(), guard, offset);
+                    // Later stores override: ite(g_i, v_i, result)
+                    result = exprBuilder->Select(storeGuard, valExpr, result);
+                  }
+                }
+              }
+            }
+            // Write the final accumulated ITE expression
+            memoryUpdateLists.at(basePtr)->extend(
+                exprBuilder->Constant(0, klee::Expr::Int32), result);
           }
           // Otherwise create a default byte-level array from the alloca
           if (!hasSpecialArray)
             translateRecursion(basePtr, guard, offset);
-          // Walk the function and translate all stores that write to this
-          // alloca, in program order.
-          for (BasicBlock &bb : *_F)
-            for (Instruction &bbInst : bb) {
-              if (auto *si = dyn_cast<StoreInst>(&bbInst)) {
-                Value *siPtr = si->getPointerOperand();
-                Value *siBase = siPtr;
-                if (auto *gep = dyn_cast<GetElementPtrInst>(siPtr))
-                  siBase = gep->getPointerOperand();
-                if (siBase == basePtr)
-                  translateInst(&bbInst);
+          // For non-output allocas: walk function and translate all stores flatly.
+          if (!outputNames.count(basePtr)) {
+            for (BasicBlock &bb : *_F)
+              for (Instruction &bbInst : bb) {
+                if (auto *si = dyn_cast<StoreInst>(&bbInst)) {
+                  Value *siPtr = si->getPointerOperand();
+                  Value *siBase = siPtr;
+                  if (auto *gep = dyn_cast<GetElementPtrInst>(siPtr))
+                    siBase = gep->getPointerOperand();
+                  if (siBase == basePtr)
+                    translateInst(&bbInst);
+                }
               }
-            }
+          }
         }
 
         if (memoryUpdateLists.count(basePtr)) {
@@ -789,8 +937,16 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
             // Read bytes and concatenate (little-endian: first byte is LSB)
             ret = nullptr;
             for (unsigned i = 0; i < loadSize; i++) {
-              kleeExpr byteIndex = exprBuilder->Add(byteOffset,
-                  exprBuilder->Constant(i, klee::Expr::Int32));
+              // Compute byte index with constant folding for matching updates
+              kleeExpr byteIndex;
+              if (byteOffset->getKind() == klee::Expr::Constant) {
+                unsigned off = static_cast<const klee::ConstantExpr *>(
+                    byteOffset.get())->getAPValue().getZExtValue();
+                byteIndex = exprBuilder->Constant(off + i, klee::Expr::Int32);
+              } else {
+                byteIndex = exprBuilder->Add(byteOffset,
+                    exprBuilder->Constant(i, klee::Expr::Int32));
+              }
               kleeExpr byteVal = exprBuilder->Read(updates, byteIndex);
               if (i == 0)
                 ret = byteVal;
@@ -918,8 +1074,9 @@ kleeExpr TranslateToStpPass::convertBddToKleeExpr(bdd node) {
     return exprBuilder->False();
 
   int var = bdd_var(node);
-  if (bddToKleeCache.count(var))
-    return bddToKleeCache[var];
+  // No caching: different BDD subgraphs on the same variable produce
+  // different expressions (e.g. a&&b vs a&&!b). BDDs are small enough
+  // that recomputation is negligible.
 
   bdd low = bdd_low(node);
   bdd high = bdd_high(node);
@@ -941,7 +1098,6 @@ kleeExpr TranslateToStpPass::convertBddToKleeExpr(bdd node) {
 
   // ITE(var, high, low)
   kleeExpr result = exprBuilder->Select(varExpr, highExpr, lowExpr);
-  bddToKleeCache[var] = result;
   return result;
 }
 
@@ -997,8 +1153,17 @@ void TranslateToStpPass::printSMTExpr(kleeExpr e, raw_ostream &os,
       }
       un = un->next.get();
     }
-    // No matching write: symbolic read, print the array name
+    // No matching write: symbolic read.
+    // For single-element arrays (registerInput): just print the name.
+    // For multi-byte arrays: include byte offset for uniqueness.
     os << re->updates.root->name;
+    if (re->updates.root->getSize() > 1) {
+      os << "_b";
+      if (re->index->getKind() == Expr::Constant)
+        os << static_cast<const klee::ConstantExpr *>(re->index.get())->getAPValue();
+      else
+        os << (uintptr_t)re->index.get();
+    }
     return;
   }
 
@@ -1093,14 +1258,12 @@ void TranslateToStpPass::printSMTExpr(kleeExpr e, raw_ostream &os,
   os << "#x0 ;; unhandled kind: " << kind;
 }
 
-void TranslateToStpPass::translateOutputToStp() {
-  errs() << "Translating output expressions to SMT-LIB2 format...\n";
+void TranslateToStpPass::translateOutputToStp(const std::string &outFileName) {
+  errs() << "Writing SMT-LIB2 to " << outFileName << "...\n";
 
   // Build a map of variable name → bit-width for SMT-LIB2 declarations.
-  // Inputs come from registerInput, outputs from registerOutput.
   std::unordered_map<std::string, unsigned> varWidths;
   for (auto &kv : inputNames) {
-    // Get bit-width from the alloca's allocated type
     if (auto *ai = dyn_cast<AllocaInst>(kv.first))
       varWidths[kv.second] = dataLayout->getTypeAllocSize(ai->getAllocatedType()) * 8;
   }
@@ -1111,9 +1274,9 @@ void TranslateToStpPass::translateOutputToStp() {
 
   // Write SMT-LIB2 output
   std::error_code EC;
-  llvm::raw_fd_ostream ofs("outputStpExpr.txt", EC);
+  llvm::raw_fd_ostream ofs(outFileName, EC);
   if (EC) {
-    errs() << "Cannot open outputStpExpr.txt: " << EC.message() << "\n";
+    errs() << "Cannot open " << outFileName << ": " << EC.message() << "\n";
     return;
   }
 

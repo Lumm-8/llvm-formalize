@@ -55,7 +55,7 @@ namespace llvm {
       TranslateToStpPass& operator=(TranslateToStpPass&& other) noexcept;
 
       void getOutputPort();
-      void translateOutputToStp();
+      void translateOutputToStp(const std::string &outFileName);
       Instruction* findStoreInstFromBasicBlock(BasicBlock &bb, Value *v);
       StringRef getStringFromValue(Value *v);
       void getOutputKleeExpr();

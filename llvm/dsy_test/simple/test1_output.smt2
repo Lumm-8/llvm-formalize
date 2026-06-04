@@ -5,6 +5,6 @@
 (declare-fun a () (_ BitVec 32))
 (declare-fun b () (_ BitVec 32))
 
-(assert (= c (ite (bvslt #x0000000A a) (concat (concat (concat x x) x) x) #x00000000)))
+(assert (= c (bvadd (ite (ite (bvslt #x00000000 a) (bvslt #x00000000 b) #x0) b (bvsub #x00000000 b)) a)))
 
 (check-sat)
