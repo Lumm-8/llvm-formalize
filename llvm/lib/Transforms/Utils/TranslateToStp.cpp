@@ -20,18 +20,12 @@
 #include "llvm/Support/raw_ostream.h"
 
 // Include std headers
-#include <fcntl.h>
-#include <fstream>
 #include <map>
-#include <regex>
-#include <unistd.h>
 #include <vector>
 
 // Include KLEE headers
 #include "klee/Expr/Expr.h"
 #include "klee/Expr/ExprBuilder.h"
-#include <llvm/Support/Debug.h>
-
 // FIXME: need to change the include path to the correct one
 // #include <stp/c_interface.h>
 
@@ -39,12 +33,11 @@
 #include <stp/c_interface.h>
 using namespace llvm;
 
-
-void printValue(Value *v, StringRef s) {
-  errs() << s ;
-  v->dump();
-  errs() << "\n";
-}
+// Set of alloca base pointers whose ITE chains are currently being built.
+// Loads from these allocas read the root array directly to avoid recursive
+// ITE chain explosion (e.g.  a = ashr a, 1 where store value reads same
+// alloca that is having its ITE chain constructed).
+static thread_local SmallPtrSet<Value *, 4> BuildingITEChains;
 
 BddBranchRecord::BddBranchRecord() {
   bdd_init(100000, 10000);
@@ -66,7 +59,11 @@ void BddBranchRecord::collectBranchInfo(Function *F) {
 
       // get all predecessors
       for (BasicBlock *preBasBlo: predecessors(bb)) {
-        bdd preBdd = basicBlockBdd[preBasBlo];
+        // Use bddfalse for predecessors not yet processed (back edges)
+        bdd preBdd = bddfalse;
+        auto it = basicBlockBdd.find(preBasBlo);
+        if (it != basicBlockBdd.end())
+          preBdd = it->second;
         bdd brBdd  = getEdgeCondition(preBasBlo, bb);
 
         pc = pc | (preBdd & brBdd);
@@ -74,7 +71,7 @@ void BddBranchRecord::collectBranchInfo(Function *F) {
 
       basicBlockBdd[bb] = pc;
     }
-}
+  }
 
 bdd BddBranchRecord::getEdgeCondition(BasicBlock *parent, BasicBlock *child) {
   auto *branchInst = dyn_cast<BranchInst>(parent->getTerminator());
@@ -271,8 +268,11 @@ void TranslateToStpPass::getOutputPort() {
 
               // Store the user-specified output name for STP output
               std::string name = getStringFromValue(outputName).str();
-              if (!name.empty())
+              if (!name.empty()) {
+                for (char &c : name)
+                  if (!isalnum(c) && c != '_') c = '_';
                 outputNames[origin] = name;
+              }
 
               LoadInst *load = new LoadInst(type, origin, Twine("loadOutput"), InsertPosition(&inst));
               output[origin] = load;
@@ -366,6 +366,22 @@ Instruction* TranslateToStpPass::findStoreInstFromBasicBlock(BasicBlock &bb, Val
  * @note Convert the value variable of the output port into a Klee expression
  */
 void TranslateToStpPass::getOutputKleeExpr() {
+  // Pre-pass: translate all registerInput calls so symbolic arrays are
+  // created BEFORE any BDD conversion or output ITE chain building.
+  // Without this, the first BDD conversion happens before arrays are
+  // set up and caches wrong values (e.g. constant 0 instead of symbolic a).
+  for (BasicBlock &bb : *_F) {
+    for (Instruction &inst : bb) {
+      if (auto *ci = dyn_cast<CallInst>(&inst)) {
+        Function *cf = ci->getCalledFunction();
+        if (cf && cf->getName().find("registerInput") != StringRef::npos) {
+          translateRecursion(ci, exprBuilder->True(),
+                            exprBuilder->Constant(0, klee::Expr::Int32));
+        }
+      }
+    }
+  }
+
   // First pass: translate all output loads to build ITE chains for all
   // output allocas. This ensures later outputs that read from earlier
   // outputs get the correct ITE-expressed values.
@@ -376,6 +392,7 @@ void TranslateToStpPass::getOutputKleeExpr() {
   // Clear the cache so the second pass recomputes now that ITE chains
   // are available for all output allocas.
   valueToKleeExprCache.clear();
+  bddToKleeCache.clear();
 
   // Second pass: translate again and store the final expressions.
   for (auto &it: output) {
@@ -396,15 +413,18 @@ kleeExpr TranslateToStpPass::translateInst(Value *v) {
 }
 
 kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeExpr offset) {
-  if (valueToKleeExprCache.count(v)) {
-    return valueToKleeExprCache[v];
-  }
+  static thread_local unsigned depth = 0;
+  if (++depth > 1000) { --depth; return exprBuilder->Constant(0, 32); }
+  if (valueToKleeExprCache.count(v)) { --depth; return valueToKleeExprCache[v]; }
 
   kleeExpr ret = nullptr;
 
   if (auto *constantInst = dyn_cast<ConstantInt>(v)) {
-    ret = exprBuilder->Constant(constantInst->getSExtValue(), 
-                            constantInst->getType()->getPrimitiveSizeInBits());
+    unsigned bw = constantInst->getType()->getPrimitiveSizeInBits();
+    // Use getZExtValue to avoid the APInt signed-constructor assertion
+    // on negative values (e.g., i32 -1 as int64_t → uint64_t overflow).
+    ret = exprBuilder->Constant(
+        static_cast<uint64_t>(constantInst->getZExtValue()), bw);
   }
   else if (auto *callInst = dyn_cast<CallInst>(v)) {
     auto *calledFunc = callInst->getCalledFunction();
@@ -446,6 +466,31 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
                   if (gep->getPointerOperand() == origin && gep->hasAllZeroIndices()) {
                     memoryArrays[gep] = array;
                     memoryUpdateLists.insert_or_assign(gep, std::make_unique<klee::UpdateList>(array, nullptr));
+                  }
+          }
+          // If origin is a GEP (struct field like p.x), find other GEPs
+          // targeting the same struct field so that loads via different
+          // GEP instructions still find the registerInput array.
+          if (auto *originGEP = dyn_cast<GetElementPtrInst>(origin)) {
+            Value *base = originGEP->getPointerOperand();
+            SmallVector<Value *, 4> idxList;
+            for (auto &idx : originGEP->indices())
+              idxList.push_back(idx);
+            for (BasicBlock &sbb : *_F)
+              for (Instruction &si : sbb)
+                if (auto *gep = dyn_cast<GetElementPtrInst>(&si))
+                  if (gep != originGEP &&
+                      gep->getPointerOperand() == base &&
+                      gep->getNumIndices() == idxList.size()) {
+                    bool same = true;
+                    for (unsigned i = 0; i < idxList.size(); i++)
+                      if (gep->getOperand(1 + i) != idxList[i]) {
+                        same = false; break;
+                      }
+                    if (same) {
+                      memoryArrays[gep] = array;
+                      memoryUpdateLists.insert_or_assign(gep, std::make_unique<klee::UpdateList>(array, nullptr));
+                    }
                   }
           }
         }
@@ -577,7 +622,9 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
       case Instruction::Sub:
       case Instruction::Mul:
       case Instruction::UDiv:
-      case Instruction::SDiv: {
+      case Instruction::SDiv:
+      case Instruction::URem:
+      case Instruction::SRem: {
         kleeExpr left = translateRecursion(inst->getOperand(0), guard, offset);
         kleeExpr right = translateRecursion(inst->getOperand(1), guard, offset);
         switch (inst->getOpcode()) {
@@ -595,6 +642,12 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
             break;
           case Instruction::SDiv:
             ret = exprBuilder->SDiv(left, right);
+            break;
+          case Instruction::URem:
+            ret = exprBuilder->URem(left, right);
+            break;
+          case Instruction::SRem:
+            ret = exprBuilder->SRem(left, right);
             break;
           default:
             assert(false && "Unsupported arithmetic operation");
@@ -722,9 +775,9 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
         unsigned allocSize = dataLayout->getTypeAllocSize(allocatedType);
         if (allocSize == 0) allocSize = 1;
 
-        std::string arrayName = allocaInst->getName().str();
-        if (arrayName.empty())
-          arrayName = "alloca_" + std::to_string(symbolicVarIndex++);
+        // Use a stable counter-based name so the SMT2 output is
+        // deterministic and auto-declare works correctly.
+        std::string arrayName = "alloca_" + std::to_string(symbolicVarIndex++);
 
         const klee::Array *array = arrayCache->CreateArray(arrayName, allocSize,
             nullptr, nullptr, klee::Expr::Int32, klee::Expr::Int8);
@@ -760,14 +813,22 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
           }
         }
 
+        // Track pointer assignments: when storing an alloca address to
+        // a pointer alloca, record the mapping so later *p loads can
+        // resolve to the correct target.
+        if (isa<AllocaInst>(val) || isa<GetElementPtrInst>(val) ||
+            isa<Argument>(val) || isa<GlobalVariable>(val)) {
+          pointerTargets[basePtr] = val;
+        }
+
         if (memoryUpdateLists.count(basePtr)) {
           kleeExpr valExpr = translateRecursion(val, guard, offset);
           unsigned arrayRange = memoryUpdateLists.at(basePtr)->root->getRange();
 
           if (arrayRange > 8) {
-            // Wide array: single-element write
-            memoryUpdateLists.at(basePtr)->extend(
-                exprBuilder->Constant(0, klee::Expr::Int32), valExpr);
+            // Wide array: write at the GEP byte offset so different
+            // struct fields (offset 0 vs 4) use separate update slots.
+            memoryUpdateLists.at(basePtr)->extend(byteOffset, valExpr);
           } else {
             unsigned storeSize = dataLayout->getTypeStoreSize(val->getType());
             if (storeSize == 0) storeSize = (val->getType()->getPrimitiveSizeInBits() + 7) / 8;
@@ -802,6 +863,19 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
       case Instruction::Load: {
         auto *loadInst = dyn_cast<LoadInst>(inst);
         Value *ptr = loadInst->getPointerOperand();
+
+        // Resolve pointer dereference: if ptr is a loaded pointer value
+        // (e.g. %p_loaded = load ptr, ptr %p_alloca), look up its
+        // target alloca from the pointerTargets map.
+        if (!isa<AllocaInst>(ptr) && !isa<GetElementPtrInst>(ptr) &&
+            !isa<GlobalVariable>(ptr) && !isa<ConstantExpr>(ptr)) {
+          if (pointerTargets.count(ptr)) {
+            ptr = pointerTargets[ptr];
+            // Propagate the mapping through this load: the load result
+            // also points to the same target.
+            pointerTargets[inst] = ptr;
+          }
+        }
 
         Value *basePtr = ptr;
         kleeExpr byteOffset = exprBuilder->Constant(0, klee::Expr::Int32);
@@ -965,19 +1039,125 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
           // Otherwise create a default byte-level array from the alloca
           if (!hasSpecialArray)
             translateRecursion(basePtr, guard, offset);
-          // For non-output allocas: walk function and translate all stores flatly.
-          if (!outputNames.count(basePtr)) {
+          // For non-output allocas: build a guarded ITE chain so that
+          // stores from different control-flow paths are selected
+          // correctly based on BDD path conditions.  The old flat-store
+          // approach (extending the UpdateList unconditionally) caused
+          // stores from unreachable paths to shadow the initial symbolic
+          // value, producing constant 0 instead of the symbolic variable.
+          // Skip if this alloca is already having its ITE chain built
+          // (recursive call from a store's value operand that reads the
+          // same alloca — see BuildingITEChains guard above).
+          // For registerInput allocas where the input is the alloca
+          // ITSELF (not a GEP field of a struct), skip the ITE chain
+          // entirely to avoid circular BDD dependencies.  Struct fields
+          // via GEP (hasSpecialArray set by GEP matching) still need
+          // ITE chains for correct multi-block store tracking.
+          bool isDirectRegisterInput = false;
+          if (hasSpecialArray) {
             for (BasicBlock &bb : *_F)
+              for (Instruction &bbInst : bb)
+                if (auto *ci = dyn_cast<CallInst>(&bbInst))
+                  if (ci->getCalledFunction() &&
+                      ci->getCalledFunction()->getName().find("registerInput") != StringRef::npos)
+                    if (auto *bc = dyn_cast<BitCastInst>(ci->getArgOperand(1)))
+                      if (bc->getOperand(0) == basePtr &&
+                          isa<AllocaInst>(bc->getOperand(0)))
+                        { isDirectRegisterInput = true; break; }
+          }
+          if (!outputNames.count(basePtr) &&
+              !BuildingITEChains.count(basePtr) &&
+              !isDirectRegisterInput) {
+            // Collect all blocks that store to this alloca
+            SmallVector<std::pair<BasicBlock *, StoreInst *>, 8> storesToAlloca;
+            for (BasicBlock &bb : *_F) {
               for (Instruction &bbInst : bb) {
                 if (auto *si = dyn_cast<StoreInst>(&bbInst)) {
                   Value *siPtr = si->getPointerOperand();
                   Value *siBase = siPtr;
                   if (auto *gep = dyn_cast<GetElementPtrInst>(siPtr))
                     siBase = gep->getPointerOperand();
-                  if (siBase == basePtr)
-                    translateInst(&bbInst);
+                  if (siBase == basePtr) {
+                    storesToAlloca.push_back({&bb, si});
+                  }
                 }
               }
+            }
+            // If there are stores from multiple *different* blocks, build
+            // an ITE chain with BDD guards.  Single-block stores (e.g.
+            // struct initializer stores in the entry block) use the old
+            // flat behavior which is correct for non-path-dependent values.
+            SmallPtrSet<BasicBlock *, 4> storeBlocks;
+            for (auto &[bb, si] : storesToAlloca)
+              storeBlocks.insert(bb);
+            bool multiBlockStores = storeBlocks.size() > 1;
+            bool isWideArray = memoryUpdateLists.count(basePtr) &&
+                memoryUpdateLists.at(basePtr)->root->getRange() > 8;
+
+            if (multiBlockStores) {
+              unsigned bitWidth = 32;
+              if (auto *ai = dyn_cast<AllocaInst>(basePtr))
+                bitWidth = dataLayout->getTypeAllocSize(ai->getAllocatedType()) * 8;
+
+              // Mark this alloca as "under ITE construction" so that
+              // recursive loads (store values that read from the same
+              // alloca) use the root array instead of triggering another
+              // ITE chain build, preventing exponential formula blowup.
+              BuildingITEChains.insert(basePtr);
+
+              // Build the guarded ITE chain over all stores.
+              kleeExpr result = exprBuilder->Constant(0, bitWidth);
+              for (auto &[bb, si] : storesToAlloca) {
+                kleeExpr storeGuard = exprBuilder->True();
+                if (bddBR->basicBlockBdd.count(bb)) {
+                  bdd blockBdd = bddBR->basicBlockBdd[bb];
+                  storeGuard = convertBddToKleeExpr(blockBdd);
+                }
+                kleeExpr valExpr = translateRecursion(
+                    si->getValueOperand(), guard, offset);
+                if (valExpr->getWidth() != bitWidth) {
+                  if (valExpr->getWidth() < bitWidth)
+                    valExpr = exprBuilder->ZExt(valExpr, bitWidth);
+                  else
+                    valExpr = exprBuilder->Extract(valExpr, 0, bitWidth);
+                }
+                // ite(guard, val, previous_result)
+                if (storeGuard->getKind() == klee::Expr::Constant) {
+                  auto &apv = static_cast<const klee::ConstantExpr *>(
+                      storeGuard.get())->getAPValue();
+                  if (apv == 1)
+                    result = valExpr;
+                  else
+                    result = exprBuilder->Select(storeGuard, valExpr, result);
+                } else {
+                  result = exprBuilder->Select(storeGuard, valExpr, result);
+                }
+              }
+
+              if (isWideArray) {
+                // Wide-element array: write the ITE expression as a single
+                // update covering the whole value.
+                memoryUpdateLists.at(basePtr)->extend(
+                    exprBuilder->Constant(0, klee::Expr::Int32), result);
+              } else {
+                // Byte-level array: decompose the ITE result into
+                // individual bytes and extend each byte index separately.
+                unsigned allocSize = bitWidth / 8;
+                if (allocSize == 0) allocSize = 1;
+                for (unsigned i = 0; i < allocSize; i++) {
+                  kleeExpr byteVal = exprBuilder->Extract(
+                      result, i * 8, klee::Expr::Int8);
+                  memoryUpdateLists.at(basePtr)->extend(
+                      exprBuilder->Constant(i, klee::Expr::Int32), byteVal);
+                }
+              }
+
+              BuildingITEChains.erase(basePtr);
+            } else {
+              // Single-block stores: flat translation is safe
+              for (auto &[bb, si] : storesToAlloca)
+                translateInst(si);
+            }
           }
         }
 
@@ -993,11 +1173,30 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
           unsigned loadBitWidth = loadInst->getType()->getPrimitiveSizeInBits();
           if (loadBitWidth == 0) loadBitWidth = 32;
 
+          // If this alloca is currently having its ITE chain built, read
+          // directly from the root array to avoid recursive ITE explosion
+          // (e.g. a = ashr a, 1 where store value reads the same alloca).
+          if (BuildingITEChains.count(basePtr) ||
+              BuildingITEChains.count(memKey)) {
+            ret = exprBuilder->Read(
+                klee::UpdateList(updates.root, nullptr),
+                exprBuilder->Constant(0, klee::Expr::Int32));
+            if (ret->getWidth() != loadBitWidth) {
+              if (ret->getWidth() < loadBitWidth)
+                ret = exprBuilder->ZExt(ret, loadBitWidth);
+              else
+                ret = exprBuilder->Extract(ret, 0, loadBitWidth);
+            }
+            valueToKleeExprCache[v] = ret;
+            --depth;
+            return ret;
+          }
+
           // If the array has a wide range (e.g. Int32 from registerInput),
           // do a single read. Otherwise, do byte-by-byte reads.
           unsigned arrayRange = updates.root->getRange();
           if (arrayRange > 8) {
-            ret = exprBuilder->Read(updates, exprBuilder->Constant(0, klee::Expr::Int32));
+            ret = exprBuilder->Read(updates, byteOffset);
             if (ret->getWidth() != loadBitWidth) {
               if (ret->getWidth() < loadBitWidth)
                 ret = exprBuilder->ZExt(ret, loadBitWidth);
@@ -1088,14 +1287,17 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
         break;
       }
       case Instruction::PHI: {
+        // Loop-unroll pass runs before us, so all loops are already
+        // unrolled.  Every PHI node is a regular multi-predecessor PHI
+        // (e.g. from mem2reg after force-unroll).  We translate it by
+        // accumulating BDD-guarded Select expressions for each incoming
+        // edge — mutually exclusive guards ensure only one value is active.
         auto *phiInst = dyn_cast<PHINode>(inst);
         unsigned width = phiInst->getType()->getPrimitiveSizeInBits();
         if (width == 0) width = 32;
-
-        // Accumulate: result = sum over incoming edges of Select(edgeGuard, val, 0)
-        kleeExpr result = exprBuilder->Constant(0, width);
         BasicBlock *currentBB = phiInst->getParent();
 
+        kleeExpr result = exprBuilder->Constant(0, width);
         for (unsigned i = 0; i < phiInst->getNumIncomingValues(); i++) {
           BasicBlock *incomingBB = phiInst->getIncomingBlock(i);
           Value *incomingVal = phiInst->getIncomingValue(i);
@@ -1105,7 +1307,6 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
 
           kleeExpr incomingExpr = translateRecursion(incomingVal, guard, offset);
 
-          // Ensure matching widths for Select
           if (incomingExpr->getWidth() != width) {
             if (incomingExpr->getWidth() < width)
               incomingExpr = exprBuilder->ZExt(incomingExpr, width);
@@ -1139,6 +1340,7 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
   }
 
   valueToKleeExprCache[v] = ret;
+  --depth;
   return ret;
 }
 
@@ -1149,11 +1351,12 @@ kleeExpr TranslateToStpPass::convertBddToKleeExpr(bdd node) {
   if (node == bddfalse)
     return exprBuilder->False();
 
-  int var = bdd_var(node);
-  // No caching: different BDD subgraphs on the same variable produce
-  // different expressions (e.g. a&&b vs a&&!b). BDDs are small enough
-  // that recomputation is negligible.
+  // Cache by unique BDD node id
+  int nodeKey = node.id();
+  if (bddToKleeCache.count(nodeKey))
+    return bddToKleeCache[nodeKey];
 
+  int var = bdd_var(node);
   bdd low = bdd_low(node);
   bdd high = bdd_high(node);
 
@@ -1174,6 +1377,7 @@ kleeExpr TranslateToStpPass::convertBddToKleeExpr(bdd node) {
 
   // ITE(var, high, low)
   kleeExpr result = exprBuilder->Select(varExpr, highExpr, lowExpr);
+  bddToKleeCache[nodeKey] = result;
   return result;
 }
 
@@ -1197,6 +1401,11 @@ void TranslateToStpPass::printSMTExpr(kleeExpr e, raw_ostream &os,
   if (kind == Expr::Constant) {
     const llvm::APInt &val =
         static_cast<const klee::ConstantExpr *>(e.get())->getAPValue();
+    // 1-bit values are Booleans in KLEE; print true / false for SMT2.
+    if (val.getBitWidth() == 1) {
+      os << (val.isZero() ? "false" : "true");
+      return;
+    }
     llvm::SmallString<40> hexStr;
     val.toString(hexStr, 16, false);
     unsigned expectedChars = (val.getBitWidth() + 3) / 4;
@@ -1232,14 +1441,17 @@ void TranslateToStpPass::printSMTExpr(kleeExpr e, raw_ostream &os,
     // No matching write: symbolic read.
     // For single-element arrays (registerInput): just print the name.
     // For multi-byte arrays: include byte offset for uniqueness.
-    os << re->updates.root->name;
+    std::string fullName = re->updates.root->name;
     if (re->updates.root->getSize() > 1) {
-      os << "_b";
+      fullName += "_b";
       if (re->index->getKind() == Expr::Constant)
-        os << static_cast<const klee::ConstantExpr *>(re->index.get())->getAPValue();
+        fullName += std::to_string(
+            static_cast<const klee::ConstantExpr *>(re->index.get())->getAPValue().getZExtValue());
       else
-        os << (uintptr_t)re->index.get();
+        fullName += std::to_string(re->index->hash());
     }
+    os << fullName;
+    undeclaredSmtArrays.insert(fullName);
     return;
   }
 
@@ -1262,12 +1474,36 @@ void TranslateToStpPass::printSMTExpr(kleeExpr e, raw_ostream &os,
     return;
   }
 
-  // Concat
+  // Concat — encode as (bvor (bvshl (zext byte) offset) ...) instead of
+  // nested (concat ...) because STP's SMT2 parser mishandles concat when the
+  // left/right operands have different bit-widths (e.g. concat(16bit, 8bit)).
   if (kind == Expr::Concat) {
-    auto *cc = static_cast<const klee::ConcatExpr *>(e.get());
-    os << "(concat ";
-    printSMTExpr(cc->getLeft(), os, varWidths); os << " ";
-    printSMTExpr(cc->getRight(), os, varWidths); os << ")";
+    // Flatten the concat tree into a list of byte-width leaves
+    SmallVector<kleeExpr, 8> leaves;
+    std::function<void(kleeExpr)> flatten = [&](kleeExpr x) {
+      if (x->getKind() == Expr::Concat) {
+        auto *cc = static_cast<const klee::ConcatExpr *>(x.get());
+        flatten(cc->getLeft());
+        flatten(cc->getRight());
+      } else {
+        leaves.push_back(x);
+      }
+    };
+    flatten(e);
+    // Encode: bvor(bvshl(zext(byte0, W), 0), bvshl(zext(byte1, W), 8), ...)
+    // where W = total bit-width of the concat result.
+    unsigned totalW = e->getWidth();
+    os << "(bvor ";
+    for (unsigned i = 0; i < leaves.size(); i++) {
+      if (i > 0) os << " ";
+      unsigned shift = i * leaves[i]->getWidth();
+      os << "(bvshl ((_ zero_extend " << (totalW - leaves[i]->getWidth()) << ") ";
+      // For 8-bit operands, print directly; for wider operands the shift
+      // from their position in the concat tree is already correct.
+      printSMTExpr(leaves[i], os, varWidths);
+      os << ") #x" << llvm::format_hex_no_prefix(shift, totalW / 4) << ")";
+    }
+    os << ")";
     return;
   }
 
@@ -1314,6 +1550,7 @@ void TranslateToStpPass::printSMTExpr(kleeExpr e, raw_ostream &os,
   case Expr::Shl: op = "bvshl"; break;
   case Expr::LShr: op = "bvlshr"; break;
   case Expr::AShr: op = "bvashr"; break;
+  case Expr::Ne:  op = "distinct"; break;
   case Expr::Eq:  op = "=";     break;
   case Expr::Ult: op = "bvult"; break;
   case Expr::Ule: op = "bvule"; break;
@@ -1359,17 +1596,11 @@ void TranslateToStpPass::translateOutputToStp(const std::string &outFileName) {
     return;
   }
 
-  // Header
-  ofs << "(set-logic QF_BV)\n";
-  ofs << "(set-info :source |generated by translateToStp pass|)\n\n";
-
-  // Declare variables
-  for (auto &vw : varWidths) {
-    ofs << "(declare-fun " << vw.first << " () (_ BitVec " << vw.second << "))\n";
-  }
-  ofs << "\n";
-
-  // Assert each output
+  // First pass: generate assertions into a temp buffer so we can
+  // discover auto-generated array names that need declare-fun entries.
+  undeclaredSmtArrays.clear();
+  std::string assertBuf;
+  llvm::raw_string_ostream assertOS(assertBuf);
   for (auto &it: outputKleeExpr) {
     Value *v = it.first;
     kleeExpr e = it.second;
@@ -1382,14 +1613,47 @@ void TranslateToStpPass::translateOutputToStp(const std::string &outFileName) {
       varName = v->getName().str();
     if (varName.empty()) continue;
 
-    // Sanitize name
     for (char &c : varName)
       if (!isalnum(c) && c != '_') c = '_';
 
-    ofs << "(assert (= " << varName << " ";
-    printSMTExpr(e, ofs, varWidths);
-    ofs << "))\n";
+    assertOS << "(assert (= " << varName << " ";
+    printSMTExpr(e, assertOS, varWidths);
+    assertOS << "))\n";
+  }
+  assertOS.flush();
 
+  // Add bit-widths for undeclared arrays.
+  // Byte-level arrays (with _b suffix) are 8-bit; others default to 32-bit.
+  for (auto &name : undeclaredSmtArrays) {
+    if (!varWidths.count(name)) {
+      unsigned bw = (name.find("_b") != std::string::npos) ? 8 : 32;
+      varWidths[name] = bw;
+    }
+  }
+
+  // Header
+  ofs << "(set-logic QF_BV)\n";
+  ofs << "(set-info :source |generated by translateToStp pass|)\n\n";
+
+  // Declare variables
+  for (auto &vw : varWidths) {
+    ofs << "(declare-fun " << vw.first << " () (_ BitVec " << vw.second << "))\n";
+  }
+  ofs << "\n";
+
+  // Write the pre-built assertions
+  ofs << assertBuf;
+
+  // Print output variable names for logging
+  for (auto &it: outputKleeExpr) {
+    Value *v = it.first;
+    if (!it.second) continue;
+    std::string varName;
+    if (outputNames.count(v))
+      varName = outputNames[v];
+    if (varName.empty())
+      varName = v->getName().str();
+    if (varName.empty()) continue;
     errs() << "SMT Variable: " << varName << "\n";
   }
 

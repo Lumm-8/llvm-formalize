@@ -8,18 +8,18 @@ void top () {
 
    if (a > 0) {
         if (b > 0) {
-            c = 1;
+            c = 10;
         }
         else {
-            c = 2;
+            c = 20;
         }
    }
    else {
         if (b > 0) {
-            c = 3;
+            c = 30;
         }
         else {
-            c = 4;
+            c = 40;
         }
    }
 

@@ -25,7 +25,6 @@
 #include <unordered_map>
 
 namespace llvm {
-    void printValue(Value *v, StringRef s);
     typedef klee::ref<klee::Expr> kleeExpr;
     /**
      * Use bdd to record the path conditions of basic blocks.
@@ -105,6 +104,17 @@ namespace llvm {
 
       // Symbolic variable index for unnamed values
       unsigned symbolicVarIndex = 0;
+
+      // Pointer analysis: maps loaded pointer SSA values to the alloca
+      // they point to.  Filled by stores to pointer allocas and
+      // propagated through pointer loads.  Used to resolve *p loads.
+      std::unordered_map<Value*, Value*> pointerTargets;
+
+      // Auto-declared array names encountered during SMT2 printing.
+      // These are auto-generated alloca names that appear in the formula
+      // but don't have explicit declare-fun entries.  Collected during
+      // printSMTExpr and written in translateOutputToStp.
+      mutable std::set<std::string> undeclaredSmtArrays;
     };
 
 } // namespace llvm

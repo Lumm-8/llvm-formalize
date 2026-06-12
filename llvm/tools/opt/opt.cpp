@@ -12,6 +12,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Transforms/Utils/TranslateToStp.h"
 #include <functional>
 
 namespace llvm {
@@ -22,4 +24,18 @@ extern "C" int optMain(int argc, char **argv,
                        llvm::ArrayRef<std::function<void(llvm::PassBuilder &)>>
                            PassBuilderCallbacks);
 
-int main(int argc, char **argv) { return optMain(argc, argv, {}); }
+int main(int argc, char **argv) {
+  return optMain(argc, argv, {
+    [](llvm::PassBuilder &PB) {
+      PB.registerPipelineParsingCallback(
+          [](llvm::StringRef Name, llvm::FunctionPassManager &FPM,
+             llvm::ArrayRef<llvm::PassBuilder::PipelineElement>) {
+            if (Name == "translate-to-stp") {
+              FPM.addPass(llvm::TranslateToStpPass());
+              return true;
+            }
+            return false;
+          });
+    }
+  });
+}

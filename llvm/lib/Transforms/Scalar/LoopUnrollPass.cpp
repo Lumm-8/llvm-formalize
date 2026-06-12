@@ -25,6 +25,7 @@
 #include "llvm/Analysis/CodeMetrics.h"
 #include "llvm/Analysis/LoopAnalysisManager.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/LoopIterator.h"
 #include "llvm/Analysis/LoopPass.h"
 #include "llvm/Analysis/LoopUnrollAnalyzer.h"
 #include "llvm/Analysis/MemorySSA.h"
@@ -53,12 +54,16 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/LoopPassManager.h"
 #include "llvm/Transforms/Utils.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/LoopPeel.h"
 #include "llvm/Transforms/Utils/LoopSimplify.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
 #include "llvm/Transforms/Utils/ScalarEvolutionExpander.h"
 #include "llvm/Transforms/Utils/SizeOpts.h"
+#include "llvm/Transforms/Utils/PromoteMemToReg.h"
 #include "llvm/Transforms/Utils/UnrollLoop.h"
+#include "llvm/Transforms/Utils/ValueMapper.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -1153,6 +1158,370 @@ bool llvm::computeUnrollCount(
   return ExplicitUnroll;
 }
 
+// Returns true if the loop has an unroll(disable) pragma.
+static bool hasUnrollDisablePragma(const Loop *L) {
+  return getUnrollMetadataForLoop(L, "llvm.loop.unroll.disable");
+}
+
+// Returns the unroll_count pragma value, searching all blocks in the loop
+// (not just the latch's loop ID). This handles the case where the frontend
+// already partially unrolled the loop and placed unroll.count on the header
+// while putting unroll.disable on the latch.
+static unsigned unrollCountPragmaValueAllBlocks(const Loop *L) {
+  unsigned Count = unrollCountPragmaValue(L);
+  if (Count > 0)
+    return Count;
+
+  // Search all loop blocks for the metadata
+  for (BasicBlock *BB : L->getBlocks()) {
+    auto *BI = dyn_cast<BranchInst>(BB->getTerminator());
+    if (!BI)
+      continue;
+    MDNode *LoopMD = BI->getMetadata(LLVMContext::MD_loop);
+    if (!LoopMD)
+      continue;
+    MDNode *FoundMD = GetUnrollMetadata(LoopMD, "llvm.loop.unroll.count");
+    if (!FoundMD || FoundMD->getNumOperands() != 2)
+      continue;
+    unsigned C =
+        mdconst::extract<ConstantInt>(FoundMD->getOperand(1))->getZExtValue();
+    if (C > 0)
+      return C;
+  }
+  return 0;
+}
+
+// Fix up a loop that was already partially unrolled by the frontend: just
+// make the last latch unconditionally branch to the exit so the loop is
+// fully unrolled with a forced exit after the last copy.
+static LoopUnrollResult
+fixupAlreadyUnrolledLoop(Loop *L, LoopInfo *LI, DominatorTree &DT,
+                         ScalarEvolution &SE, AssumptionCache &AC,
+                         const TargetTransformInfo &TTI,
+                         OptimizationRemarkEmitter &ORE,
+                         bool PreserveLCSSA) {
+  BasicBlock *Header = L->getHeader();
+  BasicBlock *LatchBlock = L->getLoopLatch();
+  BasicBlock *Preheader = L->getLoopPreheader();
+  if (!LatchBlock || !Preheader)
+    return LoopUnrollResult::Unmodified;
+
+  auto *LatchBI = dyn_cast<BranchInst>(LatchBlock->getTerminator());
+  if (!LatchBI)
+    return LoopUnrollResult::Unmodified;
+
+  SmallVector<BasicBlock *, 4> ExitBlocks;
+  L->getExitBlocks(ExitBlocks);
+  if (ExitBlocks.empty())
+    return LoopUnrollResult::Unmodified;
+
+  LLVM_DEBUG(dbgs() << "  Fixing up already-unrolled loop: forcing latch "
+                    << LatchBlock->getName() << " to exit\n");
+  ORE.emit([&]() {
+    return OptimizationRemark(DEBUG_TYPE, "ForceUnrolled", L->getStartLoc(),
+                              L->getHeader())
+           << "force-exit already-unrolled loop (pragma unroll_count)";
+  });
+
+  // Find the exit successor for the latch
+  BasicBlock *LatchExit = nullptr;
+  for (BasicBlock *Succ : successors(LatchBlock)) {
+    if (!L->contains(Succ)) {
+      LatchExit = Succ;
+      break;
+    }
+  }
+  // For an unconditional latch, find the exit through the header
+  if (!LatchExit) {
+    // The latch goes back to the header; use the first loop exit block
+    LatchExit = ExitBlocks[0];
+  }
+
+  // Remove the old predecessor relationship and redirect to exit
+  if (LatchBI->isUnconditional()) {
+    BasicBlock *OldSucc = LatchBI->getSuccessor(0);
+    OldSucc->removePredecessor(LatchBlock, /* KeepOneInputPHIs */ true);
+    LatchBI->setSuccessor(0, LatchExit);
+  } else {
+    // Conditional latch: replace with unconditional branch to exit
+    for (unsigned s = 0; s < LatchBI->getNumSuccessors(); ++s) {
+      BasicBlock *Succ = LatchBI->getSuccessor(s);
+      if (Succ != LatchExit)
+        Succ->removePredecessor(LatchBlock, /* KeepOneInputPHIs */ true);
+    }
+    auto *NewBI = BranchInst::Create(LatchExit, LatchBI->getIterator());
+    NewBI->setDebugLoc(LatchBI->getDebugLoc());
+    LatchBI->eraseFromParent();
+  }
+
+  // Fix original header PHIs: replace with preheader values.
+  // Collect PHIs first to avoid invalidating the iterator during erasure.
+  SmallVector<PHINode *, 4> PhisToRemove;
+  for (Instruction &I : *Header) {
+    auto *Phi = dyn_cast<PHINode>(&I);
+    if (!Phi)
+      break;
+    PhisToRemove.push_back(Phi);
+  }
+  for (PHINode *Phi : PhisToRemove) {
+    Value *InitVal = Phi->getIncomingValueForBlock(Preheader);
+    Phi->replaceAllUsesWith(InitVal);
+    Phi->eraseFromParent();
+  }
+
+  // Update DT, SCEV, and simplify
+  DT.recalculate(*Header->getParent());
+  SE.forgetTopmostLoop(L);
+
+  // Promote eligible allocas to registers so downstream passes (e.g.,
+  // TranslateToStp) can correctly handle path-dependent values with
+  // Select instructions instead of accumulating flat UpdateList entries.
+  SmallVector<AllocaInst *, 8> Allocas;
+  for (BasicBlock &BB : *Header->getParent())
+    for (Instruction &I : BB)
+      if (auto *AI = dyn_cast<AllocaInst>(&I))
+        if (isAllocaPromotable(AI))
+          Allocas.push_back(AI);
+  if (!Allocas.empty())
+    PromoteMemToReg(Allocas, DT, &AC);
+
+  simplifyLoopAfterUnroll(L, false, LI, &SE, &DT, &AC, &TTI, nullptr);
+  LI->erase(L);
+
+  return LoopUnrollResult::FullyUnrolled;
+}
+// Clones the loop body N-1 times in RPO order (following the same cloning
+// approach as UnrollLoop), chains the iterations, and makes the last copy
+// exit unconditionally so the loop is fully unrolled even when the trip
+// count is not known at compile time.
+static LoopUnrollResult
+forceUnrollByPragma(Loop *L, LoopInfo *LI, DominatorTree &DT,
+                    ScalarEvolution &SE, AssumptionCache &AC,
+                    const TargetTransformInfo &TTI,
+                    OptimizationRemarkEmitter &ORE,
+                    bool PreserveLCSSA, unsigned PragmaCount) {
+  BasicBlock *Header = L->getHeader();
+  BasicBlock *LatchBlock = L->getLoopLatch();
+  BasicBlock *Preheader = L->getLoopPreheader();
+  if (!LatchBlock || !Preheader)
+    return LoopUnrollResult::Unmodified;
+
+  // Validate that the latch has a branch terminator
+  auto *LatchBI = dyn_cast<BranchInst>(LatchBlock->getTerminator());
+  if (!LatchBI)
+    return LoopUnrollResult::Unmodified;
+
+  SmallVector<BasicBlock *, 4> ExitBlocks;
+  L->getExitBlocks(ExitBlocks);
+  if (ExitBlocks.empty())
+    return LoopUnrollResult::Unmodified;
+
+  LLVM_DEBUG(dbgs() << "  Force-unrolling loop by " << PragmaCount
+                    << " (pragma)\n");
+  ORE.emit([&]() {
+    return OptimizationRemark(DEBUG_TYPE, "ForceUnrolled", L->getStartLoc(),
+                              L->getHeader())
+           << "force-unrolled loop by " << ore::NV("UnrollCount", PragmaCount)
+           << " iterations (pragma unroll_count)";
+  });
+
+  // Collect original PHI nodes from header
+  std::vector<PHINode *> OrigPHINode;
+  for (Instruction &I : *Header) {
+    if (auto *Phi = dyn_cast<PHINode>(&I))
+      OrigPHINode.push_back(Phi);
+    else
+      break;
+  }
+
+  // RPO traversal for correct cloning order (same approach as UnrollLoop)
+  LoopBlocksDFS DFS(L);
+  DFS.perform(LI);
+
+  std::vector<BasicBlock *> Headers = {Header};
+  std::vector<BasicBlock *> Latches = {LatchBlock};
+
+  ValueToValueMapTy LastValueMap;
+
+  // Insert cloned blocks after the original latch
+  auto BlockInsertPt = std::next(LatchBlock->getIterator());
+
+  for (unsigned It = 1; It < PragmaCount; ++It) {
+    SmallVector<BasicBlock *, 8> NewBlocks;
+    SmallDenseMap<const Loop *, Loop *, 4> NewLoops;
+    NewLoops[L] = L;
+
+    // Clone blocks in RPO order
+    for (LoopBlocksDFS::RPOIterator BB = DFS.beginRPO(); BB != DFS.endRPO();
+         ++BB) {
+      ValueToValueMapTy VMap;
+      BasicBlock *New =
+          CloneBasicBlock(*BB, VMap, "." + Twine(It));
+      Header->getParent()->insert(BlockInsertPt, New);
+
+      // Tell LoopInfo about the new block
+      addClonedBlockToLoopInfo(*BB, New, LI, NewLoops);
+
+      if (*BB == Header) {
+        // Fix cloned header PHI nodes: replace them with incoming values from
+        // the previous iteration's latch.
+        for (PHINode *OrigPHI : OrigPHINode) {
+          PHINode *NewPHI = cast<PHINode>(VMap[OrigPHI]);
+          Value *InVal = NewPHI->getIncomingValueForBlock(LatchBlock);
+          if (Instruction *InValI = dyn_cast<Instruction>(InVal))
+            if (It > 1 && L->contains(InValI))
+              InVal = LastValueMap[InValI];
+          VMap[OrigPHI] = InVal;
+          NewPHI->eraseFromParent();
+        }
+      }
+
+      // Update LastValueMap: track the newest clone of each value
+      LastValueMap[*BB] = New;
+      for (ValueToValueMapTy::iterator VI = VMap.begin(), VE = VMap.end();
+           VI != VE; ++VI)
+        LastValueMap[VI->first] = VI->second;
+
+      // Add PHI entries for cloned values to exit blocks
+      for (BasicBlock *Succ : successors(*BB)) {
+        if (L->contains(Succ))
+          continue;
+        for (PHINode &PHI : Succ->phis()) {
+          Value *Incoming = PHI.getIncomingValueForBlock(*BB);
+          auto It = LastValueMap.find(Incoming);
+          if (It != LastValueMap.end())
+            Incoming = It->second;
+          PHI.addIncoming(Incoming, New);
+          SE.forgetLcssaPhiWithNewPredecessor(L, &PHI);
+        }
+      }
+
+      // Track headers and latches for later rewiring
+      if (*BB == Header)
+        Headers.push_back(New);
+      if (*BB == LatchBlock)
+        Latches.push_back(New);
+
+      NewBlocks.push_back(New);
+
+      // Update DomTree: the cloned header dominates all cloned blocks;
+      // for other blocks, use the cloned immediate dominator.
+      if (*BB == Header)
+        DT.addNewBlock(New, Latches[It - 1]);
+      else {
+        auto *BBDomNode = DT.getNode(*BB);
+        auto *BBIDom = BBDomNode->getIDom();
+        BasicBlock *OriginalBBIDom = BBIDom->getBlock();
+        DT.addNewBlock(
+            New, cast<BasicBlock>(LastValueMap[cast<Value>(OriginalBBIDom)]));
+      }
+    }
+
+    // Remap all instructions in the cloned blocks to use the newest values
+    remapInstructionsInBlocks(NewBlocks, LastValueMap);
+    for (BasicBlock *NewBlock : NewBlocks)
+      for (Instruction &I : *NewBlock)
+        if (auto *II = dyn_cast<AssumeInst>(&I))
+          AC.registerAssumption(II);
+  }
+
+  // Rewire latches:
+  // - Iterations 0..PragmaCount-2: latch[i] → header[i+1]
+  // - Last iteration: latch[last] → exit (unconditional, forced exit)
+  //
+  // In loop-simplified form the latch is typically unconditional (br label
+  // %header), but it can also be a conditional exiting latch. Handle both.
+  for (unsigned i = 0; i < Latches.size(); ++i) {
+    BasicBlock *CurLatch = Latches[i];
+    auto *BI = cast<BranchInst>(CurLatch->getTerminator());
+
+    if (i + 1 < PragmaCount) {
+      // Not the last iteration: rewire the successor that points back to
+      // this iteration's header to point to the next iteration's header.
+      BI->replaceSuccessorWith(Headers[i], Headers[i + 1]);
+    } else {
+      // Last iteration: force the latch to unconditionally branch to the
+      // first exit block of the original loop.
+      SmallVector<BasicBlock *, 4> LoopExits;
+      L->getExitBlocks(LoopExits);
+      BasicBlock *TargetExit = LoopExits.empty() ? nullptr : LoopExits[0];
+      if (!TargetExit)
+        return LoopUnrollResult::Unmodified;
+
+      if (BI->isUnconditional()) {
+        // Unconditional latch: remove the old predecessor relationship
+        // before redirecting to the exit.
+        BasicBlock *OldSucc = BI->getSuccessor(0);
+        OldSucc->removePredecessor(CurLatch, /* KeepOneInputPHIs */ true);
+        BI->setSuccessor(0, TargetExit);
+      } else {
+        // Conditional latch: find which successor is the exit for this clone,
+        // remove predecessors from the non-exit successors, and replace with
+        // an unconditional branch to the exit.
+        BasicBlock *ExitForThisLatch = nullptr;
+        for (unsigned s = 0; s < BI->getNumSuccessors(); ++s) {
+          BasicBlock *Succ = BI->getSuccessor(s);
+          if (Succ != Headers[i]) {
+            ExitForThisLatch = Succ;
+            break;
+          }
+        }
+        if (!ExitForThisLatch)
+          ExitForThisLatch = TargetExit;
+
+        for (unsigned s = 0; s < BI->getNumSuccessors(); ++s) {
+          BasicBlock *Succ = BI->getSuccessor(s);
+          if (Succ != ExitForThisLatch)
+            Succ->removePredecessor(CurLatch, /* KeepOneInputPHIs */ true);
+        }
+
+        auto *NewBI = BranchInst::Create(ExitForThisLatch, BI->getIterator());
+        NewBI->setDebugLoc(BI->getDebugLoc());
+        BI->eraseFromParent();
+      }
+    }
+  }
+
+  // Fix original header PHIs: since the loop is fully unrolled, replace them
+  // with their preheader incoming values.  OrigPHINode was collected before
+  // any modifications, so it is safe to iterate and erase.
+  for (PHINode *PN : OrigPHINode) {
+    Value *InitVal = PN->getIncomingValueForBlock(Preheader);
+    PN->replaceAllUsesWith(InitVal);
+    PN->eraseFromParent();
+  }
+
+  // Update dominator tree: exit blocks may now be reached through different
+  // paths.  Recalculate the DT for the whole function since the CFG changed
+  // substantially (back-edges removed).
+  DT.recalculate(*Header->getParent());
+
+  // Forget SCEV for the unrolled loop (must be done before erasing L from LI
+  // because forgetTopmostLoop traverses up through parent loops).
+  SE.forgetTopmostLoop(L);
+
+  // Promote eligible allocas to registers so downstream passes (e.g.,
+  // TranslateToStp) can correctly handle path-dependent values with
+  // Select instructions instead of accumulating flat UpdateList entries.
+  SmallVector<AllocaInst *, 8> Allocas;
+  for (BasicBlock &BB : *Header->getParent())
+    for (Instruction &I : BB)
+      if (auto *AI = dyn_cast<AllocaInst>(&I))
+        if (isAllocaPromotable(AI))
+          Allocas.push_back(AI);
+  if (!Allocas.empty())
+    PromoteMemToReg(Allocas, DT, &AC);
+
+  // Simplify the unrolled code: constant propagation and DCE on the blocks
+  // that were part of the loop (must be done before erasing L).
+  simplifyLoopAfterUnroll(L, false, LI, &SE, &DT, &AC, &TTI, nullptr);
+
+  // Clean up LoopInfo (must be last — L must stay valid for the calls above).
+  LI->erase(L);
+
+  return LoopUnrollResult::FullyUnrolled;
+}
+
 static LoopUnrollResult
 tryToUnrollLoop(Loop *L, DominatorTree &DT, LoopInfo *LI, ScalarEvolution &SE,
                 const TargetTransformInfo &TTI, AssumptionCache &AC,
@@ -1173,7 +1542,11 @@ tryToUnrollLoop(Loop *L, DominatorTree &DT, LoopInfo *LI, ScalarEvolution &SE,
                     << L->getHeader()->getParent()->getName() << "] Loop %"
                     << L->getHeader()->getName() << "\n");
   TransformationMode TM = hasUnrollTransformation(L);
-  if (TM & TM_Disable)
+  // When #pragma clang loop unroll_count(N) is present on any loop block,
+  // we may still want to force-unroll even if another block has unroll.disable
+  // (which happens when the frontend already partially unrolled the loop).
+  bool HasPragmaCountAnywhere = unrollCountPragmaValueAllBlocks(L) > 0;
+  if ((TM & TM_Disable) && !HasPragmaCountAnywhere)
     return LoopUnrollResult::Unmodified;
 
   // If this loop isn't forced to be unrolled, avoid unrolling it when the
@@ -1296,6 +1669,19 @@ tryToUnrollLoop(Loop *L, DominatorTree &DT, LoopInfo *LI, ScalarEvolution &SE,
   bool IsCountSetExplicitly = computeUnrollCount(
       L, TTI, DT, LI, &AC, SE, EphValues, &ORE, TripCount, MaxTripCount,
       MaxOrZero, TripMultiple, UCE, UP, PP, UseUpperBound);
+
+  // When the loop was already partially unrolled by the frontend (has both
+  // unroll.count on one block and unroll.disable on the latch),
+  // computeUnrollCount may set UP.Count=0 because of the disable metadata.
+  // Fix up the last latch to exit unconditionally before the early return.
+  if (HasPragmaCountAnywhere && !TripCount && !OnlyFullUnroll &&
+      ((TM & TM_Disable) || hasUnrollDisablePragma(L))) {
+    LoopUnrollResult Result = fixupAlreadyUnrolledLoop(L, LI, DT, SE, AC, TTI,
+                                                       ORE, PreserveLCSSA);
+    if (Result != LoopUnrollResult::Unmodified)
+      return Result;
+  }
+
   if (!UP.Count)
     return LoopUnrollResult::Unmodified;
 
@@ -1338,6 +1724,39 @@ tryToUnrollLoop(Loop *L, DominatorTree &DT, LoopInfo *LI, ScalarEvolution &SE,
   // TODO: This decision should probably be pushed up into
   // computeUnrollCount().
   UP.Runtime &= TripCount == 0 && TripMultiple % UP.Count != 0;
+
+  // When #pragma clang loop unroll_count(N) is present on a loop with unknown
+  // trip count, force-unroll: clone the body N times and make the last copy
+  // exit unconditionally instead of going back to check the loop condition.
+  // This bypasses the normal runtime-unrolling path which would create a
+  // remainder loop.
+  //
+  // Two cases:
+  // 1. Fresh IR: loop has 1 body copy, unroll.count = N.  Clone N-1 more
+  //    copies and force the last latch to exit.
+  // 2. Already-unrolled IR (frontend did partial unroll): loop already has
+  //    unroll.disable on the latch.  Just fix the latch to exit unconditionally.
+  unsigned PragmaCount = unrollCountPragmaValueAllBlocks(L);
+  if (PragmaCount > 0 && !TripCount && !OnlyFullUnroll) {
+    bool AlreadyUnrolled = (TM & TM_Disable) || hasUnrollDisablePragma(L);
+    LoopUnrollResult Result;
+    if (AlreadyUnrolled) {
+      // Frontend already unrolled the body; just force the last latch to exit.
+      Result = fixupAlreadyUnrolledLoop(L, LI, DT, SE, AC, TTI, ORE,
+                                        PreserveLCSSA);
+    } else if (UP.Force) {
+      // Fresh loop; clone the body and force exit.
+      Result = forceUnrollByPragma(L, LI, DT, SE, AC, TTI, ORE,
+                                   PreserveLCSSA, PragmaCount);
+    } else {
+      Result = LoopUnrollResult::Unmodified;
+    }
+    if (Result != LoopUnrollResult::Unmodified) {
+      // Loop has been erased; nothing more to do.
+      return Result;
+    }
+    // If the force-unroll failed, fall through to normal unrolling.
+  }
 
   // Save loop properties before it is transformed.
   MDNode *OrigLoopID = L->getLoopID();

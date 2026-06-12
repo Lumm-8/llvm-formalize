@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "additionalDirectories": [
+      "/home/dengshy/github/klee/lib/Core"
+    ],
+    "allow": [
+      "Bash(ninja -C /home/dengshy/github/llvm-formalize/build LLVMTransformUtils opt)"
+    ]
+  }
+}
