@@ -1317,6 +1317,8 @@ include_directories(
 		/home/dengshy/github/BuDDy/install/include
     /home/dengshy/github/llvm-project/llvm/include/klee
     /home/dengshy/github/stp/build/include
+    /home/dengshy/github/stp/include
+    /home/dengshy/github/stp/lib
 )
 
 #------------ Formaylity end   -------------------

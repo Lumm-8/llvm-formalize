@@ -21,10 +21,15 @@
 #include "klee/Solver/STPBuilder.h"
 
 #include <map>
+#include <set>
 #include <vector>
 #include <unordered_map>
 
 namespace llvm {
+    class CallInst;
+    class StoreInst;
+    class AllocaInst;
+
     typedef klee::ref<klee::Expr> kleeExpr;
     /**
      * Use bdd to record the path conditions of basic blocks.
@@ -34,6 +39,7 @@ namespace llvm {
     public:
       BddBranchRecord();
       ~BddBranchRecord();
+      void reset();
       void collectBranchInfo(Function *F);
       bdd getEdgeCondition(BasicBlock *parent, BasicBlock *child);
 
@@ -53,15 +59,22 @@ namespace llvm {
       TranslateToStpPass(TranslateToStpPass&& other) noexcept;
       TranslateToStpPass& operator=(TranslateToStpPass&& other) noexcept;
 
+      void resetFunctionState();
+      void collectFunctionMemoryIndex();
       void getOutputPort();
       void translateOutputToStp(const std::string &outFileName);
       Instruction* findStoreInstFromBasicBlock(BasicBlock &bb, Value *v);
       StringRef getStringFromValue(Value *v);
       void getOutputKleeExpr();
+      void buildMemorySideEffects();
       kleeExpr translateInst(Value *v);
       kleeExpr translateRecursion(Value *v, kleeExpr guard, kleeExpr offset);
+      kleeExpr guardedValue(kleeExpr guard, kleeExpr newValue, kleeExpr oldValue);
+      bool decomposePointer(Value *ptr, Value *&basePtr, kleeExpr &byteOffset,
+                            kleeExpr guard, kleeExpr offset);
       kleeExpr convertBddToKleeExpr(bdd node);
       kleeExpr getGuardForValue(Value *v);
+      klee::ExprHandle convertKleeToStpExpr(kleeExpr e);
       void printSMTExpr(kleeExpr e, raw_ostream &os,
                         const std::unordered_map<std::string, unsigned> &varWidths);
     private:
@@ -85,6 +98,17 @@ namespace llvm {
       std::unordered_map<Value*, const klee::Array*> memoryArrays;
       std::unordered_map<Value*, std::unique_ptr<klee::UpdateList>> memoryUpdateLists;
 
+      // One-pass function index used by output translation.  The old
+      // translation path repeatedly walked the whole function when resolving
+      // loads/stores.  These tables let the recursive translator start from
+      // output assignments and look up only the relevant memory operations.
+      std::vector<CallInst*> inputRegisterCalls;
+      std::vector<CallInst*> memoryIntrinsicCalls;
+      std::vector<AllocaInst*> allocaInsts;
+      std::unordered_map<Value*, std::vector<StoreInst*>> storesByBase;
+      std::unordered_map<Value*, unsigned> loadCountByBase;
+      std::set<Value*> storedBases;
+
       // Value to basic block mapping for BDD guard lookup
       std::unordered_map<Value*, BasicBlock*> valueToBlock;
 
@@ -94,6 +118,8 @@ namespace llvm {
       std::unordered_map<Value*, std::string> inputNames;
       // Input sizes in bytes from registerInput's third argument
       std::unordered_map<Value*, unsigned> inputSizes;
+      // Output sizes in bytes from registerOutput's third argument
+      std::unordered_map<Value*, unsigned> outputSizes;
 
       // Symbolic variables for arguments and globals
       std::unordered_map<Argument*, kleeExpr> argumentExprs;
@@ -101,6 +127,16 @@ namespace llvm {
 
       // BDD-to-KLEE memoization cache
       std::unordered_map<int, kleeExpr> bddToKleeCache;
+
+      // Named wide arrays for local int allocas (two-phase ITE optimization).
+      // Maps alloca → pre-created named array.  Loads from these allocas
+      // return Read(array, 0) references instead of inlined ITE chains,
+      // preventing O(2^n) formula explosion.
+      std::unordered_map<Value*, const klee::Array*> namedLocalArrays;
+
+      // ITE expressions built for named local arrays (populated after
+      // output ITE processing, emitted as separate SMT2 assertions).
+      std::unordered_map<Value*, kleeExpr> namedLocalITEs;
 
       // Symbolic variable index for unnamed values
       unsigned symbolicVarIndex = 0;
@@ -115,6 +151,9 @@ namespace llvm {
       // but don't have explicit declare-fun entries.  Collected during
       // printSMTExpr and written in translateOutputToStp.
       mutable std::set<std::string> undeclaredSmtArrays;
+
+      bool explicitMemoryMode = false;
+      bool memorySideEffectsBuilt = false;
     };
 
 } // namespace llvm
