@@ -22,6 +22,7 @@
 
 #include <map>
 #include <set>
+#include <string>
 #include <vector>
 #include <unordered_map>
 
@@ -29,6 +30,7 @@ namespace llvm {
     class CallInst;
     class StoreInst;
     class AllocaInst;
+    class GEPOperator;
 
     typedef klee::ref<klee::Expr> kleeExpr;
     /**
@@ -77,6 +79,18 @@ namespace llvm {
       klee::ExprHandle convertKleeToStpExpr(kleeExpr e);
       void printSMTExpr(kleeExpr e, raw_ostream &os,
                         const std::unordered_map<std::string, unsigned> &varWidths);
+      std::string sanitizeSymbolName(std::string name) const;
+      std::string registerSymbolName(Value *v, std::string proposedName,
+                                     bool exactName = false);
+      std::string getSymbolName(Value *v, StringRef fallbackPrefix);
+      std::string getPointerSourceName(Value *ptr, StringRef fallbackPrefix);
+      std::string getGEPSourceName(const GEPOperator *gep);
+      bool getConstantPointerOffset(Value *ptr, Value *&basePtr,
+                                    int64_t &byteOffset) const;
+      void recordRegisteredPointerOffset(Value *ptr);
+      kleeExpr normalizeRegisteredOffset(Value *memKey, kleeExpr byteOffset);
+      Value *selectRegisteredMemoryKey(Value *ptr, Value *basePtr,
+                                       kleeExpr &byteOffset);
     private:
       Function *_F;
       const DataLayout *dataLayout;
@@ -140,6 +154,14 @@ namespace llvm {
 
       // Symbolic variable index for unnamed values
       unsigned symbolicVarIndex = 0;
+
+      // Unified SMT symbol naming.  Exact names come from
+      // registerInput/registerOutput and are never uniquified; inferred names
+      // use LLVM/source provenance where available and are made unique here
+      // instead of relying on STP/KLEE suffixing.
+      std::unordered_map<Value*, std::string> symbolNames;
+      std::unordered_map<std::string, unsigned> symbolNameUseCount;
+      std::unordered_map<Value*, int64_t> registeredBaseOffsets;
 
       // Pointer analysis: maps loaded pointer SSA values to the alloca
       // they point to.  Filled by stores to pointer allocas and

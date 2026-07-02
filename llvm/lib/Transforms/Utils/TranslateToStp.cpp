@@ -24,6 +24,7 @@
 #include <cctype>
 #include <map>
 #include <sstream>
+#include <string>
 #include <vector>
 
 // Include KLEE headers
@@ -203,6 +204,9 @@ TranslateToStpPass::TranslateToStpPass(TranslateToStpPass&& other) noexcept
     namedLocalArrays(std::move(other.namedLocalArrays)),
     namedLocalITEs(std::move(other.namedLocalITEs)),
     symbolicVarIndex(other.symbolicVarIndex),
+    symbolNames(std::move(other.symbolNames)),
+    symbolNameUseCount(std::move(other.symbolNameUseCount)),
+    registeredBaseOffsets(std::move(other.registeredBaseOffsets)),
     pointerTargets(std::move(other.pointerTargets)),
     undeclaredSmtArrays(std::move(other.undeclaredSmtArrays)),
     explicitMemoryMode(other.explicitMemoryMode),
@@ -246,6 +250,9 @@ TranslateToStpPass::operator=(TranslateToStpPass&& other) noexcept {
     namedLocalArrays = std::move(other.namedLocalArrays);
     namedLocalITEs = std::move(other.namedLocalITEs);
     symbolicVarIndex = other.symbolicVarIndex;
+    symbolNames = std::move(other.symbolNames);
+    symbolNameUseCount = std::move(other.symbolNameUseCount);
+    registeredBaseOffsets = std::move(other.registeredBaseOffsets);
     pointerTargets = std::move(other.pointerTargets);
     undeclaredSmtArrays = std::move(other.undeclaredSmtArrays);
     explicitMemoryMode = other.explicitMemoryMode;
@@ -290,6 +297,9 @@ void TranslateToStpPass::resetFunctionState() {
   globalVarExprs.clear();
   namedLocalArrays.clear();
   namedLocalITEs.clear();
+  symbolNames.clear();
+  symbolNameUseCount.clear();
+  registeredBaseOffsets.clear();
   pointerTargets.clear();
   undeclaredSmtArrays.clear();
   explicitMemoryMode = false;
@@ -443,9 +453,10 @@ void TranslateToStpPass::getOutputPort() {
               // Store the user-specified output name for STP output
               std::string name = getStringFromValue(outputName).str();
               if (!name.empty()) {
-                for (char &c : name)
-                  if (!isalnum(c) && c != '_') c = '_';
+                name = sanitizeSymbolName(name);
                 outputNames[origin] = name;
+                registerSymbolName(origin, name, true);
+                recordRegisteredPointerOffset(origin);
               }
               if (auto *sizeCI = dyn_cast<ConstantInt>(ci->getArgOperand(2)))
                 outputSizes[origin] = (unsigned)sizeCI->getZExtValue();
@@ -486,9 +497,13 @@ void TranslateToStpPass::getOutputPort() {
               Value *riOrigin = riPtr;
               if (auto *bc = dyn_cast<BitCastInst>(riPtr))
                 riOrigin = bc->getOperand(0);
+              riOrigin = stripPointerCasts(riOrigin);
               std::string iname = getStringFromValue(riName).str();
               if (!iname.empty()) {
+                iname = sanitizeSymbolName(iname);
                 inputNames[riOrigin] = iname;
+                registerSymbolName(riOrigin, iname, true);
+                recordRegisteredPointerOffset(riOrigin);
                 if (auto *sizeCI = dyn_cast<ConstantInt>(ci->getArgOperand(2)))
                   inputSizes[riOrigin] = (unsigned)sizeCI->getZExtValue();
               }
@@ -545,6 +560,206 @@ StringRef llvm::TranslateToStpPass::getStringFromValue(Value *v) {
   return StringRef("");
 } 
 
+std::string TranslateToStpPass::sanitizeSymbolName(std::string name) const {
+  while (!name.empty() && name.front() == '%')
+    name.erase(name.begin());
+  if (name.size() > 5 && name.substr(name.size() - 5) == ".addr")
+    name.resize(name.size() - 5);
+  if (name.empty())
+    return name;
+
+  for (char &c : name) {
+    if (!isalnum(static_cast<unsigned char>(c)) && c != '_' &&
+        c != '$' && c != '.' && c != '[' && c != ']')
+      c = '_';
+  }
+  if (!name.empty() && isdigit(static_cast<unsigned char>(name.front())))
+    name = "v" + name;
+  return name;
+}
+
+std::string TranslateToStpPass::registerSymbolName(Value *v,
+                                                   std::string proposedName,
+                                                   bool exactName) {
+  proposedName = sanitizeSymbolName(proposedName);
+  if (proposedName.empty())
+    proposedName = "sym";
+
+  if (!v)
+    return proposedName;
+
+  auto existing = symbolNames.find(v);
+  if (existing != symbolNames.end())
+    return existing->second;
+
+  if (exactName) {
+    symbolNames[v] = proposedName;
+    symbolNameUseCount.try_emplace(proposedName, 1);
+    return proposedName;
+  }
+
+  unsigned &count = symbolNameUseCount[proposedName];
+  std::string uniqueName = proposedName;
+  if (count != 0)
+    uniqueName += "$" + std::to_string(count);
+  ++count;
+  symbolNames[v] = uniqueName;
+  return uniqueName;
+}
+
+std::string TranslateToStpPass::getGEPSourceName(const GEPOperator *gep) {
+  if (!gep)
+    return "";
+
+  std::string baseName = getPointerSourceName(
+      const_cast<Value *>(gep->getPointerOperand()), "ptr");
+  std::string path;
+  unsigned operandIndex = 0;
+  for (auto it = gep_type_begin(gep), et = gep_type_end(gep); it != et;
+       ++it, ++operandIndex) {
+    Value *indexVal = it.getOperand();
+    auto *constIdx = dyn_cast<ConstantInt>(indexVal);
+    uint64_t idx = constIdx ? constIdx->getZExtValue() : 0;
+
+    // The leading zero index steps through the base object; it is not a
+    // source-level field or array index.
+    if (operandIndex == 0 && constIdx && idx == 0)
+      continue;
+
+    if (it.isStruct()) {
+      path += "_field";
+      path += std::to_string(idx);
+    } else if (constIdx) {
+      path += "_idx";
+      path += std::to_string(idx);
+    } else {
+      path += "_idx";
+    }
+  }
+  return sanitizeSymbolName(baseName + path);
+}
+
+std::string TranslateToStpPass::getPointerSourceName(Value *ptr,
+                                                     StringRef fallbackPrefix) {
+  ptr = stripPointerCasts(ptr);
+  if (inputNames.count(ptr))
+    return registerSymbolName(ptr, inputNames[ptr], true);
+  if (outputNames.count(ptr))
+    return registerSymbolName(ptr, outputNames[ptr], true);
+  if (auto *gep = dyn_cast<GEPOperator>(ptr)) {
+    std::string name = getGEPSourceName(gep);
+    if (!name.empty())
+      return registerSymbolName(ptr, name);
+  }
+  return getSymbolName(ptr, fallbackPrefix);
+}
+
+std::string TranslateToStpPass::getSymbolName(Value *v,
+                                              StringRef fallbackPrefix) {
+  v = stripPointerCasts(v);
+  if (inputNames.count(v))
+    return registerSymbolName(v, inputNames[v], true);
+  if (outputNames.count(v))
+    return registerSymbolName(v, outputNames[v], true);
+
+  auto existing = symbolNames.find(v);
+  if (existing != symbolNames.end())
+    return existing->second;
+
+  std::string proposed;
+  if (auto *gep = dyn_cast<GEPOperator>(v)) {
+    proposed = getGEPSourceName(gep);
+  } else if (v->hasName()) {
+    proposed = v->getName().str();
+    if (!proposed.empty() &&
+        (proposed.front() == '.' ||
+         proposed.find(".sroa.") != std::string::npos ||
+         proposed.rfind("sroa.", 0) == 0))
+      proposed.clear();
+  }
+
+  if (proposed.empty()) {
+    proposed = fallbackPrefix.str();
+    if (proposed.empty())
+      proposed = "sym";
+    proposed += "$" + std::to_string(symbolicVarIndex++);
+  }
+
+  return registerSymbolName(v, proposed);
+}
+
+bool TranslateToStpPass::getConstantPointerOffset(Value *ptr, Value *&basePtr,
+                                                  int64_t &byteOffset) const {
+  ptr = stripPointerCasts(ptr);
+  basePtr = ptr;
+  byteOffset = 0;
+
+  auto getGEPOffset = [&](const GEPOperator *gep) -> bool {
+    APInt off(dataLayout->getIndexTypeSizeInBits(
+                  gep->getPointerOperand()->getType()),
+              0, true);
+    if (!gep->accumulateConstantOffset(*dataLayout, off))
+      return false;
+    basePtr = stripPointerCasts(const_cast<Value *>(gep->getPointerOperand()));
+    byteOffset = off.getSExtValue();
+    return true;
+  };
+
+  if (auto *gep = dyn_cast<GEPOperator>(ptr))
+    return getGEPOffset(gep);
+
+  if (auto *ce = dyn_cast<ConstantExpr>(ptr))
+    if (ce->getOpcode() == Instruction::GetElementPtr)
+      return getGEPOffset(cast<GEPOperator>(ce));
+
+  return true;
+}
+
+void TranslateToStpPass::recordRegisteredPointerOffset(Value *ptr) {
+  Value *base = nullptr;
+  int64_t off = 0;
+  if (!getConstantPointerOffset(ptr, base, off))
+    return;
+  ptr = stripPointerCasts(ptr);
+  registeredBaseOffsets[ptr] = off;
+}
+
+kleeExpr TranslateToStpPass::normalizeRegisteredOffset(Value *memKey,
+                                                       kleeExpr byteOffset) {
+  auto it = registeredBaseOffsets.find(stripPointerCasts(memKey));
+  if (it == registeredBaseOffsets.end() || it->second == 0)
+    return byteOffset;
+
+  int64_t baseOff = it->second;
+  if (byteOffset->getKind() == klee::Expr::Constant) {
+    uint64_t off = static_cast<const klee::ConstantExpr *>(
+        byteOffset.get())->getAPValue().getZExtValue();
+    if (baseOff >= 0 && off >= static_cast<uint64_t>(baseOff))
+      return exprBuilder->Constant(off - static_cast<uint64_t>(baseOff),
+                                   klee::Expr::Int32);
+  }
+
+  kleeExpr baseExpr = exprBuilder->Constant(
+      static_cast<uint64_t>(baseOff), klee::Expr::Int32);
+  return exprBuilder->Sub(byteOffset, baseExpr);
+}
+
+Value *TranslateToStpPass::selectRegisteredMemoryKey(Value *ptr,
+                                                     Value *basePtr,
+                                                     kleeExpr &byteOffset) {
+  Value *strippedPtr = stripPointerCasts(ptr);
+  if (memoryUpdateLists.count(strippedPtr) &&
+      registeredBaseOffsets.count(strippedPtr)) {
+    byteOffset = normalizeRegisteredOffset(strippedPtr, byteOffset);
+    return strippedPtr;
+  }
+  if (memoryUpdateLists.count(basePtr)) {
+    byteOffset = normalizeRegisteredOffset(basePtr, byteOffset);
+    return basePtr;
+  }
+  return basePtr;
+}
+
 /**
    * @note find store instruction form 'bb' basic block by 'v' value.
    */
@@ -576,7 +791,6 @@ void TranslateToStpPass::getOutputKleeExpr() {
   // are read AND written (have both load and store instructions).
   // These get Read references instead of inlined ITE, preventing O(2^n).
   {
-    unsigned varIdx = 0;
     for (AllocaInst *ai : allocaInsts) {
         if (inputNames.count(ai) || outputNames.count(ai)) continue;
         Type *allocTy = ai->getAllocatedType();
@@ -598,7 +812,7 @@ void TranslateToStpPass::getOutputKleeExpr() {
               if (g->getPointerOperand() == ai) { hasGEPUse = true; break; }
         if (hasGEPUse) continue;
 
-        std::string varName = "var_" + std::to_string(varIdx++);
+        std::string varName = getSymbolName(ai, "var");
         const klee::Array *array = arrayCache->CreateArray(
             varName, 1, nullptr, nullptr, klee::Expr::Int32, bw);
         memoryArrays[ai] = array;
@@ -920,7 +1134,9 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
 
         std::string inputName = getStringFromValue(callInst->getArgOperand(0)).str();
         if (inputName.empty())
-          inputName = "input_" + std::to_string(symbolicVarIndex++);
+          inputName = getPointerSourceName(stripPointerCasts(ptr), "input");
+        else
+          inputName = registerSymbolName(stripPointerCasts(ptr), inputName, true);
 
         Value *originPtr = stripPointerCasts(ptr);
         bool scalarInput = false;
@@ -948,12 +1164,14 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
         }
         memoryArrays[ptr] = array;
         memoryUpdateLists.insert_or_assign(ptr, std::make_unique<klee::UpdateList>(array, nullptr));
+        recordRegisteredPointerOffset(ptr);
 
         // Track the underlying alloca/GEP to redirect later loads/stores
         if (originPtr != ptr) {
           Value *origin = originPtr;
           memoryArrays[origin] = array;
           memoryUpdateLists.insert_or_assign(origin, std::make_unique<klee::UpdateList>(array, nullptr));
+          recordRegisteredPointerOffset(origin);
           // If origin is an alloca (struct base), find GEPs targeting it
           // at offset 0 and map them to this array (struct field access).
           if (isa<AllocaInst>(origin)) {
@@ -963,12 +1181,14 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
                   if (gep->getPointerOperand() == origin && gep->hasAllZeroIndices()) {
                     memoryArrays[gep] = array;
                     memoryUpdateLists.insert_or_assign(gep, std::make_unique<klee::UpdateList>(array, nullptr));
+                    recordRegisteredPointerOffset(gep);
                   }
           }
           // If origin is a GEP (struct field like p.x), find other GEPs
           // targeting the same struct field so that loads via different
           // GEP instructions still find the registerInput array.
           if (auto *originGEP = dyn_cast<GetElementPtrInst>(origin)) {
+            registerSymbolName(originGEP, inputName, true);
             Value *base = originGEP->getPointerOperand();
             SmallVector<Value *, 4> idxList;
             for (auto &idx : originGEP->indices())
@@ -985,8 +1205,10 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
                         same = false; break;
                       }
                     if (same) {
+                      registerSymbolName(gep, inputName, true);
                       memoryArrays[gep] = array;
                       memoryUpdateLists.insert_or_assign(gep, std::make_unique<klee::UpdateList>(array, nullptr));
+                      recordRegisteredPointerOffset(gep);
                     }
                   }
           }
@@ -1033,13 +1255,17 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
                            guard, offset);
           translateRecursion(dstBase, guard, offset);
           translateRecursion(srcBase, guard, offset);
+          Value *dstKey = selectRegisteredMemoryKey(callInst->getArgOperand(0),
+                                                    dstBase, dstOff);
+          Value *srcKey = selectRegisteredMemoryKey(callInst->getArgOperand(1),
+                                                   srcBase, srcOff);
 
-          if (!memoryUpdateLists.count(dstBase) ||
-              !memoryUpdateLists.count(srcBase)) {
+          if (!memoryUpdateLists.count(dstKey) ||
+              !memoryUpdateLists.count(srcKey)) {
             errs() << "Warning: memcpy with unknown memory object\n";
           } else {
-            auto &dstUpdates = *memoryUpdateLists.at(dstBase);
-            auto &srcUpdates = *memoryUpdateLists.at(srcBase);
+            auto &dstUpdates = *memoryUpdateLists.at(dstKey);
+            auto &srcUpdates = *memoryUpdateLists.at(srcKey);
             SmallVector<kleeExpr, 16> bytes;
             for (uint64_t i = 0; i < len; ++i) {
               kleeExpr srcIndex = srcOff;
@@ -1107,6 +1333,8 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
           decomposePointer(callInst->getArgOperand(0), dstBase, dstOff,
                            guard, offset);
           translateRecursion(dstBase, guard, offset);
+          Value *dstKey = selectRegisteredMemoryKey(callInst->getArgOperand(0),
+                                                    dstBase, dstOff);
           kleeExpr byteVal = translateRecursion(callInst->getArgOperand(1),
                                                 guard, offset);
           if (byteVal->getWidth() > klee::Expr::Int8)
@@ -1114,10 +1342,10 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
           else if (byteVal->getWidth() < klee::Expr::Int8)
             byteVal = exprBuilder->ZExt(byteVal, klee::Expr::Int8);
 
-          if (!memoryUpdateLists.count(dstBase)) {
+          if (!memoryUpdateLists.count(dstKey)) {
             errs() << "Warning: memset with unknown memory object\n";
           } else {
-            auto &dstUpdates = *memoryUpdateLists.at(dstBase);
+            auto &dstUpdates = *memoryUpdateLists.at(dstKey);
             if (dstUpdates.root->getRange() > 8 &&
                 dstOff->getKind() == klee::Expr::Constant &&
                 len * 8 == dstUpdates.root->getRange()) {
@@ -1154,8 +1382,7 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
         } else {
           unsigned width = retType->getPrimitiveSizeInBits();
           if (width == 0) width = 32;
-          std::string symName = "call_" + funcName.str() + "_" +
-                                std::to_string(symbolicVarIndex++);
+          std::string symName = getSymbolName(callInst, "call_" + funcName.str());
           const klee::Array *array = arrayCache->CreateArray(symName,
               (width + 7) / 8, nullptr, nullptr, klee::Expr::Int32, klee::Expr::Int8);
           klee::UpdateList ul(array, nullptr);
@@ -1184,9 +1411,7 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
       } else {
         unsigned width = argType->getPrimitiveSizeInBits();
         if (width == 0) width = 32;
-        std::string varName = arg->getName().str();
-        if (varName.empty())
-          varName = "arg_" + std::to_string(arg->getArgNo());
+        std::string varName = getSymbolName(arg, "arg");
         const klee::Array *array = arrayCache->CreateArray(varName,
             (width + 7) / 8, nullptr, nullptr, klee::Expr::Int32, klee::Expr::Int8);
         klee::UpdateList ul(array, nullptr);
@@ -1209,9 +1434,7 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
     } else {
       Type *globalType = globalVar->getValueType();
       unsigned size = dataLayout->getTypeAllocSize(globalType);
-      std::string name = globalVar->getName().str();
-      if (name.empty())
-        name = "global_" + std::to_string(symbolicVarIndex++);
+      std::string name = getSymbolName(globalVar, "global");
 
       const klee::Array *array;
       if (globalVar->hasInitializer()) {
@@ -1450,7 +1673,7 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
 
         // Use a stable counter-based name so the SMT2 output is
         // deterministic and auto-declare works correctly.
-        std::string arrayName = "alloca_" + std::to_string(symbolicVarIndex++);
+        std::string arrayName = getSymbolName(allocaInst, "alloca");
 
         const klee::Array *array = arrayCache->CreateArray(arrayName, allocSize,
             nullptr, nullptr, klee::Expr::Int32, klee::Expr::Int8);
@@ -1478,16 +1701,18 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
           pointerTargets[basePtr] = val;
         }
 
-        if (memoryUpdateLists.count(basePtr)) {
+        Value *memKey = selectRegisteredMemoryKey(ptr, basePtr, byteOffset);
+
+        if (memoryUpdateLists.count(memKey)) {
           kleeExpr valExpr = translateRecursion(val, guard, offset);
-          unsigned arrayRange = memoryUpdateLists.at(basePtr)->root->getRange();
+          unsigned arrayRange = memoryUpdateLists.at(memKey)->root->getRange();
 
           if (arrayRange > 8) {
             // Wide array: write at the GEP byte offset so different
             // struct fields (offset 0 vs 4) use separate update slots.
             kleeExpr oldValue = exprBuilder->Read(
-                *memoryUpdateLists.at(basePtr), byteOffset);
-            memoryUpdateLists.at(basePtr)->extend(
+                *memoryUpdateLists.at(memKey), byteOffset);
+            memoryUpdateLists.at(memKey)->extend(
                 byteOffset, guardedValue(guard, valExpr, oldValue));
           } else {
             unsigned storeSize = dataLayout->getTypeStoreSize(val->getType());
@@ -1511,8 +1736,8 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
                 byteValue = exprBuilder->Extract(valExpr, i * 8, klee::Expr::Int8);
               }
               kleeExpr oldByte = exprBuilder->Read(
-                  *memoryUpdateLists.at(basePtr), byteIndex);
-              memoryUpdateLists.at(basePtr)->extend(
+                  *memoryUpdateLists.at(memKey), byteIndex);
+              memoryUpdateLists.at(memKey)->extend(
                   byteIndex, guardedValue(guard, byteValue, oldByte));
             }
           }
@@ -1552,7 +1777,7 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
           Type *allocTy = ai->getAllocatedType();
           if (allocTy->isIntegerTy() && allocTy->getPrimitiveSizeInBits() <= 64) {
             if (!namedLocalArrays.count(ptr)) {
-              std::string varName = "var_" + std::to_string(namedLocalArrays.size());
+              std::string varName = getSymbolName(ptr, "var");
               unsigned bw = allocTy->getPrimitiveSizeInBits();
               const klee::Array *array = arrayCache->CreateArray(
                   varName, 1, nullptr, nullptr, klee::Expr::Int32, bw);
@@ -1657,6 +1882,7 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
               if (auto *gep = dyn_cast<GetElementPtrInst>(on.first)) {
                 if (gep->getPointerOperand() == basePtr) {
                   outName = on.second;
+                  outKey = gep;
                   outBitW = gep->getResultElementType()->getPrimitiveSizeInBits();
                   break;
                 }
@@ -1673,6 +1899,7 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
             memoryArrays[outKey] = array;
             memoryUpdateLists.insert_or_assign(
                 outKey, std::make_unique<klee::UpdateList>(array, nullptr));
+            recordRegisteredPointerOffset(outKey);
             hasSpecialArray = true;
 
             // Build guarded ITE chain for output allocas with stores from
@@ -1683,9 +1910,19 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
             auto outStoresIt = storesByBase.find(basePtr);
             if (outStoresIt != storesByBase.end()) {
               for (StoreInst *si : outStoresIt->second) {
+                if (outKey != basePtr) {
+                  Value *storeBase = nullptr;
+                  int64_t storeOff = 0;
+                  if (!getConstantPointerOffset(si->getPointerOperand(),
+                                                storeBase, storeOff) ||
+                      storeBase != basePtr ||
+                      !registeredBaseOffsets.count(outKey) ||
+                      storeOff != registeredBaseOffsets[outKey])
+                    continue;
+                }
                 BasicBlock *bb = si->getParent();
                 // Write current ITE so loads from this alloca see it
-                memoryUpdateLists.at(basePtr)->extend(
+                memoryUpdateLists.at(outKey)->extend(
                     exprBuilder->Constant(0, klee::Expr::Int32), result);
                 // Get guard and translate value (loads from this alloca
                 // will read the current ITE via the UpdateList)
@@ -1711,7 +1948,7 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
               }
             }
             // Write the final accumulated ITE expression
-            memoryUpdateLists.at(basePtr)->extend(
+            memoryUpdateLists.at(outKey)->extend(
                 exprBuilder->Constant(0, klee::Expr::Int32), result);
           }
           // Otherwise create a default byte-level array from the alloca
@@ -1733,6 +1970,16 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
           // output value must reflect all body stores.
           bool isDirectRegisterInput = false;
           bool isOutput = outputNames.count(basePtr) != 0;
+          if (!isOutput) {
+            for (auto &on : outputNames) {
+              if (auto *gep = dyn_cast<GetElementPtrInst>(on.first)) {
+                if (stripPointerCasts(gep->getPointerOperand()) == basePtr) {
+                  isOutput = true;
+                  break;
+                }
+              }
+            }
+          }
           if (!isOutput && hasSpecialArray) {
             for (CallInst *ci : inputRegisterCalls) {
               Value *riPtr = stripPointerCasts(ci->getArgOperand(1));
@@ -1829,12 +2076,9 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
           }
         }
 
-        // For struct field loads via GEP, prefer the GEP's own array
-        // if registered (e.g., registerInput for p.y maps to the GEP %y).
-        Value *memKey = basePtr;
-        if (auto *gepLd = dyn_cast<GetElementPtrInst>(loadInst->getPointerOperand()))
-          if (memoryUpdateLists.count(gepLd))
-            memKey = gepLd;
+        // For struct field loads via GEP, prefer the registered GEP's own
+        // array and normalize the access to the member-local offset space.
+        Value *memKey = selectRegisteredMemoryKey(ptr, basePtr, byteOffset);
 
         if (memoryUpdateLists.count(memKey)) {
           klee::UpdateList &updates = *memoryUpdateLists.at(memKey);
@@ -1908,6 +2152,7 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
       }
       case Instruction::GetElementPtr: {
         auto *gepInst = dyn_cast<GetElementPtrInst>(inst);
+        getSymbolName(gepInst, "gep");
         Value *ptrOperand = gepInst->getPointerOperand();
 
         // Translate the base pointer address
@@ -2619,12 +2864,6 @@ void TranslateToStpPass::translateOutputToStp(const std::string &outFileName) {
     std::vector<klee::ExprHandle> liveExprs;
     std::vector<::VCExpr> assertions;
 
-    auto sanitizeName = [](std::string name) {
-      for (char &c : name)
-        if (!isalnum(c) && c != '_') c = '_';
-      return name;
-    };
-
     auto makeSymbol = [&](const std::string &name, unsigned bitWidth)
         -> klee::ExprHandle {
       ::VCType type = (bitWidth == klee::Expr::Bool)
@@ -2662,8 +2901,8 @@ void TranslateToStpPass::translateOutputToStp(const std::string &outFileName) {
       if (outputNames.count(v))
         varName = outputNames[v];
       if (varName.empty())
-        varName = v->getName().str();
-      varName = sanitizeName(varName);
+        varName = getSymbolName(v, "out");
+      varName = sanitizeSymbolName(varName);
       if (varName.empty()) continue;
 
       unsigned bitWidth = 0;
@@ -2720,7 +2959,122 @@ void TranslateToStpPass::translateOutputToStp(const std::string &outFileName) {
     std::ostringstream ss;
     printer::SMTLIB2_PrintBack(ss, *queryNode, stpObj->bm, false);
     ss << "(check-sat)\n";
-    ofs << ss.str();
+    std::string smt = ss.str();
+
+    std::set<std::string> registeredNames;
+    for (auto &kv : inputNames) {
+      std::string name = sanitizeSymbolName(kv.second);
+      if (!name.empty())
+        registeredNames.insert(name);
+    }
+    for (auto &kv : outputNames) {
+      std::string name = sanitizeSymbolName(kv.second);
+      if (!name.empty())
+        registeredNames.insert(name);
+    }
+    for (auto &kv : symbolNames) {
+      std::string name = sanitizeSymbolName(kv.second);
+      if (!name.empty())
+        registeredNames.insert(name);
+    }
+    for (auto &kv : namedLocalArrays) {
+      if (!kv.second)
+        continue;
+      std::string name = sanitizeSymbolName(kv.second->name);
+      if (!name.empty())
+        registeredNames.insert(name);
+    }
+
+    // STP may uniquify symbols as |name_0|, |name_1|, ... even when the
+    // original KLEE/STP symbol name came from our naming table.  The public SMT
+    // interface should use the chosen symbol name exactly.
+    for (const std::string &name : registeredNames) {
+      std::string prefix = "|" + name + "_";
+      size_t pos = 0;
+      while ((pos = smt.find(prefix, pos)) != std::string::npos) {
+        size_t digitPos = pos + prefix.size();
+        size_t end = digitPos;
+        while (end < smt.size() && isdigit(static_cast<unsigned char>(smt[end])))
+          ++end;
+        if (end > digitPos && end < smt.size() && smt[end] == '|') {
+          smt.replace(pos, end - pos + 1, "|" + name + "|");
+          pos += name.size() + 2;
+        } else {
+          pos = digitPos;
+        }
+      }
+    }
+
+    auto replaceAll = [](std::string &text, const std::string &from,
+                         const std::string &to) {
+      if (from.empty())
+        return;
+      size_t pos = 0;
+      while ((pos = text.find(from, pos)) != std::string::npos) {
+        text.replace(pos, from.size(), to);
+        pos += to.size();
+      }
+    };
+
+    // Scalar registerInput values are modeled internally as a size-1 KLEE
+    // array because KLEE has no scalar variable Expr.  Expose them in SMT2 as
+    // the source-level bit-vector variable requested by registerInput.
+    for (auto &kv : inputNames) {
+      Value *ptr = stripPointerCasts(kv.first);
+      unsigned bitWidth = 0;
+      bool scalarInput = false;
+      if (auto *ai = dyn_cast<AllocaInst>(ptr)) {
+        Type *allocTy = ai->getAllocatedType();
+        scalarInput = allocTy->isIntegerTy();
+        if (inputSizes.count(kv.first))
+          bitWidth = inputSizes[kv.first] * 8;
+        else if (scalarInput)
+          bitWidth = allocTy->getPrimitiveSizeInBits();
+      } else if (auto *gep = dyn_cast<GEPOperator>(ptr)) {
+        Type *elemTy = gep->getResultElementType();
+        scalarInput = elemTy->isIntegerTy();
+        if (inputSizes.count(kv.first))
+          bitWidth = inputSizes[kv.first] * 8;
+        else if (scalarInput)
+          bitWidth = elemTy->getPrimitiveSizeInBits();
+      }
+
+      if (!scalarInput || bitWidth == 0 || bitWidth > 64)
+        continue;
+
+      std::string name = sanitizeSymbolName(kv.second);
+      if (name.empty())
+        continue;
+      std::string quoted = "|" + name + "|";
+      std::string selectPrefix = "(select " + quoted + "  ";
+      bool hasNonZeroSelect = false;
+      size_t selectPos = 0;
+      while ((selectPos = smt.find(selectPrefix, selectPos)) != std::string::npos) {
+        size_t indexPos = selectPos + selectPrefix.size();
+        bool isZeroIndex =
+            smt.compare(indexPos, 10, "#x00000000") == 0 ||
+            smt.compare(indexPos, 3, "#b0") == 0;
+        if (!isZeroIndex) {
+          hasNonZeroSelect = true;
+          break;
+        }
+        selectPos = indexPos + 1;
+      }
+      if (hasNonZeroSelect)
+        continue;
+
+      std::string arrayDecl =
+          "(declare-fun " + quoted +
+          " () (Array (_ BitVec 32) (_ BitVec " +
+          std::to_string(bitWidth) + ") ))";
+      std::string bvDecl =
+          "(declare-fun " + quoted + " () (_ BitVec " +
+          std::to_string(bitWidth) + "))";
+      replaceAll(smt, arrayDecl, bvDecl);
+      replaceAll(smt, "(select " + quoted + "  #x00000000)", quoted);
+    }
+
+    ofs << smt;
     return true;
   };
 
@@ -2786,11 +3140,10 @@ void TranslateToStpPass::translateOutputToStp(const std::string &outFileName) {
     if (outputNames.count(v))
       varName = outputNames[v];
     if (varName.empty())
-      varName = v->getName().str();
+      varName = getSymbolName(v, "out");
     if (varName.empty()) continue;
 
-    for (char &c : varName)
-      if (!isalnum(c) && c != '_') c = '_';
+    varName = sanitizeSymbolName(varName);
 
     // Collect shared nodes, assign let-names, print with let wrapper
     exprCount.clear();
@@ -2883,7 +3236,8 @@ void TranslateToStpPass::translateOutputToStp(const std::string &outFileName) {
     if (outputNames.count(v))
       varName = outputNames[v];
     if (varName.empty())
-      varName = v->getName().str();
+      varName = getSymbolName(v, "out");
+    varName = sanitizeSymbolName(varName);
     if (varName.empty()) continue;
     errs() << "SMT Variable: " << varName << "\n";
   }
