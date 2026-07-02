@@ -21,6 +21,8 @@ void _Z13registerInputPKcPvi(const char *name, void *ptr, int size) {
     int ival = val ? atoi(val) : 0;
     if (size == 4)
         *(int *)ptr = ival;
+    else if (size == 2)
+        *(short *)ptr = (short)ival;
     else if (size == 1)
         *(char *)ptr = (char)ival;
     // struct fields: environment variable name matches registerInput name
@@ -31,6 +33,8 @@ void _Z14registerOutputPKcPvi(const char *name, void *ptr, int size) {
     // Print one line per output:  name=value
     if (size == 4)
         printf("%s=%d\n", name, *(int *)ptr);
+    else if (size == 2)
+        printf("%s=%d\n", name, (int)*(short *)ptr);
     else if (size == 1)
         printf("%s=%d\n", name, (int)*(char *)ptr);
 }

@@ -13,8 +13,9 @@ LLC_BIN="$BUILD_DIR/bin/llc"
 LLVM_LINK_BIN="$BUILD_DIR/bin/llvm-link"
 STP_BIN="/home/dengshy/github/stp/build/stp"
 CLANG_BIN="clang-13"
-PIPELINE_SMT2="loop-simplify,lcssa,loop-unroll,translate-to-stp"
-PIPELINE_UNROLL="loop-simplify,lcssa,loop-unroll"
+PIPELINE_CANON="sroa,mem2reg,early-cse<memssa>,dse,memcpyopt"
+PIPELINE_SMT2="loop-simplify,lcssa,loop-unroll-full,${PIPELINE_CANON},translate-to-stp"
+PIPELINE_UNROLL="loop-simplify,lcssa,loop-unroll-full"
 export LD_LIBRARY_PATH="/home/dengshy/github/stp/deps/install/lib:/home/dengshy/github/stp/build/lib:/home/dengshy/github/BuDDy/install/lib:${LD_LIBRARY_PATH:-}"
 
 # ---- output helpers ----
