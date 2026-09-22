@@ -1,0 +1,82 @@
+name: Formal M0 M1
+
+on:
+  pull_request:
+    paths:
+      - CMakeLists.txt
+      - cmake/**
+      - containers/dev/**
+      - dependencies.lock.yaml
+      - docs/**
+      - include/formal/**
+      - lib/**
+      - tests/**
+      - .github/workflows/formal-m0-m1.yml
+  push:
+    paths:
+      - CMakeLists.txt
+      - cmake/**
+      - containers/dev/**
+      - dependencies.lock.yaml
+      - docs/**
+      - include/formal/**
+      - lib/**
+      - tests/**
+      - .github/workflows/formal-m0-m1.yml
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - name: Debug
+            build_type: Debug
+            sanitizers: OFF
+          - name: Release
+            build_type: Release
+            sanitizers: OFF
+          - name: Sanitizers
+            build_type: Debug
+            sanitizers: ON
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/dev/Dockerfile
+          load: true
+          tags: formal-m0-m1
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Configure, build and test ${{ matrix.config.name }}
+        run: |
+          docker run --rm -v "$PWD:/workspace" formal-m0-m1 \
+            /bin/bash -lc 'cmake -S . -B build-ci -G Ninja \
+              -DCMAKE_BUILD_TYPE=${{ matrix.config.build_type }} \
+              -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+              -DLLVM_DIR=/opt/llvm-build/lib/cmake/llvm \
+              -DFORMAL_REQUIRE_PINNED_CLANG=ON \
+              -DFORMAL_REQUIRE_STP_TEST_ORACLE=ON \
+              -DFORMAL_REQUIRE_Z3_TEST_ORACLE=ON \
+              -DFORMAL_WARNINGS_AS_ERRORS=ON \
+              -DFORMAL_ENABLE_SANITIZERS=${{ matrix.config.sanitizers }} && \
+              cmake --build build-ci -j2 && \
+              ctest --test-dir build-ci --output-on-failure'
+      - name: Check formatting
+        run: |
+          docker run --rm -v "$PWD:/workspace" formal-m0-m1 \
+            /bin/bash -lc 'find include/formal lib tests tools \
+              -type f \( -name "*.h" -o -name "*.cpp" \) -print0 | \
+              xargs -0 clang-format --dry-run --Werror'
+      - name: Run clang-tidy
+        if: matrix.config.name == 'Debug'
+        run: |
+          docker run --rm -v "$PWD:/workspace" formal-m0-m1 \
+            /bin/bash -lc 'clang-tidy -p build-ci --warnings-as-errors="*" \
+              lib/Expr.cpp lib/SMTLibWriter.cpp lib/FormalEntry.cpp \
+              lib/FormalPass.cpp lib/PreflightResult.cpp lib/Solver.cpp \
+              lib/STPSolver.cpp tools/STPWorkerMain.cpp'
+      - run: git diff --check

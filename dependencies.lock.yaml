@@ -1,0 +1,62 @@
+schema_version: 1
+toolchain:
+  llvm:
+    version: 20.0.0git
+    major: 20
+    revision: eccf4d44d346eee498b0ff709e625e3104448751
+    repository: https://github.com/llvm/llvm-project.git
+    required_components: [LLVM, opt, llvm-lit, FileCheck, not]
+    build_options:
+      assertions: true
+      rtti: false
+  clang:
+    version: 20.0.0git
+    revision: eccf4d44d346eee498b0ff709e625e3104448751
+    required_for: C-to-bitcode end-to-end tests
+production_dependencies:
+  stp:
+    role: required M2 QF_BV/QF_AUFBV solver backend and M1 SMT-LIB oracle
+    production_required: true
+    cmake_package: STP 2.3.3 EXACT CONFIG
+    version: 2.3.3
+    git_describe: 2.3.4-7-g1bdfe507
+    revision: 1bdfe5076c3f78e2bb7fccc5efb1a2a36c4068e6
+    sat_backend:
+      name: minisat
+      revision: 14c78206cd12d1d36b7e042fa758747c135670a4
+    cryptominisat: disabled
+    build_profile:
+      compiler: /usr/bin/c++
+      only_simple: false
+      assertions: true
+      shared: true
+      python_interface: false
+      upstream_tests: true
+      abc_revision: 95393064368b7c05da4d6f0264fc3419c175c7cb
+test_dependencies:
+  googletest:
+    version: 1.14.0-llvm
+    source: third-party/unittest/googletest
+    license: BSD-3-Clause
+    gtest_all_sha256: 972d3016860f9aa6452e078cf77406290fb7003b66fd6c0744a030bd1c323606
+  z3:
+    role: optional M2 cross-solver oracle
+    version: 4.8.12-1
+    available_in_current_environment: false
+    available_in_ci_container: true
+    provisioning: ubuntu-22.04-z3-package
+deferred_dependencies:
+  z3_backend: post-M2 cross-check
+  klee: external differential oracle only
+  cudd: deferred optimization
+provisioning:
+  network_fetch_during_cmake: false
+  supported_host: Linux x86_64
+  required_ci_cmake_options:
+    FORMAL_REQUIRE_PINNED_CLANG: true
+    FORMAL_REQUIRE_STP_TEST_ORACLE: true
+    FORMAL_REQUIRE_Z3_TEST_ORACLE: true
+    FORMAL_ENABLE_STP: true
+    FORMAL_BUILD_TESTS: true
+    FORMAL_WARNINGS_AS_ERRORS: true
+  container: containers/dev/Dockerfile

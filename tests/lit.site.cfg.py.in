@@ -1,0 +1,11 @@
+@LIT_SITE_CFG_IN_HEADER@
+
+config.formal_source_root = r"@CMAKE_CURRENT_SOURCE_DIR@"
+config.formal_binary_root = r"@CMAKE_CURRENT_BINARY_DIR@"
+config.formal_opt = r"@FORMAL_PINNED_OPT_EXECUTABLE@"
+config.formal_filecheck = r"@FORMAL_FILECHECK_EXECUTABLE@"
+config.formal_not = r"@FORMAL_NOT_EXECUTABLE@"
+config.formal_plugin = r"@CMAKE_CURRENT_BINARY_DIR@/FormalPass@CMAKE_SHARED_MODULE_SUFFIX@"
+
+lit_config.load_config(
+    config, r"@CMAKE_CURRENT_SOURCE_DIR@/tests/lit.cfg.py")
