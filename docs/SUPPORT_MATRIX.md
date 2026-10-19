@@ -1,10 +1,11 @@
-# FormalPass M0/M1/M2 Support Matrix
+# FormalPass M0–M4 Support Matrix
 
-This matrix is the executable contract for the implemented M0, M1 and M2 scope.
+This matrix is the executable contract for the implemented M0 through M4 scope.
 `SUPPORTED` means the named behavior is implemented and tested at its stated
-layer. It does not mean that LLVM instructions are symbolically executed.
+layer. For M0 through M2 it does not mean that LLVM instructions are
+symbolically executed; M3 adds only the scalar instruction subset below.
 `REJECTED` means preflight deterministically produces an `INVALID_TASK` result.
-`UNKNOWN` identifies semantics owned by a later milestone; M0/M1/M2 never turn one
+`UNKNOWN` identifies unsupported semantics; M0 through M4 never turn one
 of these cases into `SAFE`. `EXPERIMENTAL` is not used by M0/M1.
 
 ## M0 plugin and input contract
@@ -65,7 +66,7 @@ of these cases into `SAFE`. `EXPERIMENTAL` is not used by M0/M1.
 | Stable SMT-LIB v2 output | SUPPORTED | M1 | Incremental bounded output, linear UpdateList serialization, declaration lower-bound checks, cross-process byte comparison and pinned STP validation |
 | Random expression property tests | SUPPORTED | M1 | Fixed seeds; full-width APInt folds plus symbolic AST/assignment checks through STP cover arithmetic, div/rem, shifts, signed comparisons, select, concat/extract/ext/trunc, Bool/Not/BV1, random array updates, and randomized simplification-vs-raw-SMT equivalence |
 | Undefined division fold boundaries | SUPPORTED | M1 | Divide/remainder by zero and `sdiv(INT_MIN,-1)` remain explicit nodes; the later LLVM executor must gate UB |
-| LLVM `i1` instruction semantics | UNKNOWN | M3 | M1 only exposes explicit BV1-to-Bool conversion |
+| LLVM `i1` instruction semantics | SUPPORTED | M3 | Stored as BV1; branch and select guards use the single explicit `ExprContext::toBool` conversion |
 | `undef`, poison, `freeze`, `nsw`, `nuw`, `exact` | UNKNOWN | M9 | These are not represented by the M1 Expr AST |
 
 ## M2 solver boundary
@@ -88,23 +89,135 @@ of these cases into `SAFE`. `EXPERIMENTAL` is not used by M0/M1.
 | Failed/timeout/model-invalid SMT-LIB query export | SUPPORTED | M2 | Nonzero-deadline failures produce standalone QF_BV/QF_AUFBV artifacts with original target/constraints, versions, options, timeout and reason code. Zero-deadline TIMEOUT intentionally writes only metadata plus an empty query and never traverses the untrusted query |
 | Z3 representative cross-check | SUPPORTED IN CI | M2 test oracle | The CI container installs Z3 and configures with `FORMAL_REQUIRE_Z3_TEST_ORACLE=ON`, making absence a configuration failure. Every semantic sample emits both an expected-UNSAT validity query and an expected-SAT witness query; scalar/real Array select-store, signed div/rem/comparison, AShr and Bool/Not families are covered. Non-CI builds retain an explicit capability skip when Z3 is absent |
 
-## LLVM semantic families not implemented in M0/M1/M2
+## M3 scalar symbolic executor
+
+M3 is exposed as the `FormalExecutor` library and the test-oriented
+`FormalScalarExecutor` driver. Function arguments must be explicitly pre-bound
+to scalar Expr values. This is not the M5 registration API and is not a claim
+that ordinary Clang `-O0` output is supported.
+
+| Feature | Status | Tests / notes |
+|---|---|---|
+| `ExecutionState`, one-frame `StackFrame`, `ProgramCounter` | SUPPORTED | Stable state IDs, depth, instruction count, predecessor, local bindings, constraints, status and IR/source termination location |
+| Deterministic DFS worklist | SUPPORTED | LLVM successor/case order is preserved under LIFO scheduling; results are emitted in stable state-ID order |
+| Integer widths | SUPPORTED | APInt/Expr fixed-width semantics, including i1, i8, i24, i32, i65 and i128 |
+| Constants and inputs | SUPPORTED | `ConstantInt` and explicitly pre-bound integer arguments only; no missing SSA value is synthesized |
+| Modular arithmetic and bitwise operations | SUPPORTED | `add sub mul and or xor`; unflagged fixed-width semantics |
+| Division, remainder and shifts | SUPPORTED WITH DEFINEDNESS SPLIT | `udiv sdiv urem srem shl lshr ashr`; defined and undefined guards are independently queried |
+| Integer comparisons | SUPPORTED | All ten `icmp` predicates; signed and unsigned translations are separate |
+| Integer casts | SUPPORTED | `trunc zext sext`; same-width integer `bitcast` where LLVM admits it |
+| `select` | SUPPORTED | Builds one Expr and never forks, constrains, or queries the solver |
+| Branch and switch | SUPPORTED | Both branch polarities queried; every switch case plus the all-cases-false default guard queried; only SAT successors scheduled |
+| PHI | SUPPORTED | Incoming value selected by actual predecessor; all PHIs in a block resolve against one pre-entry local snapshot, then commit together |
+| `ret void`, `ret integer` | SUPPORTED | Produces a `Completed` `PathResult` with constraints and termination location |
+| `unreachable` | ERROR | A feasible path reaching it is `REACHED-UNREACHABLE`, distinct from incomplete and internal error |
+| Loops/backedges | UNKNOWN | First repeated basic block on a path terminates that path with `UNKNOWN-M3-LOOP`; M3 performs no unrolling |
+| Solver non-answer | UNKNOWN | TIMEOUT, backend UNKNOWN and worker failure preserve the affected path as incomplete; none is pruned as UNSAT |
+| Aggregate result | SUPPORTED | Internal error dominates; otherwise path error, then incomplete/UNKNOWN, then `M3_EXECUTOR_COMPLETE`. The last status is not program `SAFE` |
+
+### M3 opcode table
+
+| Classification | LLVM IR |
+|---|---|
+| Executed | `add`, `sub`, `mul`, `udiv`, `sdiv`, `urem`, `srem`, `and`, `or`, `xor`, `shl`, `lshr`, `ashr`; `icmp eq/ne/ult/ule/ugt/uge/slt/sle/sgt/sge`; `trunc`, `zext`, `sext`, legal integer `bitcast`; `select`, `phi`, unconditional/conditional `br`, `switch`, `ret`, `unreachable` |
+| Scalar operands accepted | `ConstantInt`, pre-bound integer `Argument`, and an already-bound supported instruction result |
+| UNKNOWN: memory/pointers | `alloca`, `load`, `store`, `getelementptr`, pointer/integer casts and other non-integer casts |
+| UNKNOWN: calls/control | `call`, `invoke`, all EH instructions, `indirectbr`, `callbr`, `va_arg`; repeated blocks/backedges |
+| UNKNOWN: other value families | atomics/fences, floating point, vectors, aggregates, unsupported constants/opcodes/types |
+| UNKNOWN: LLVM special values/flags | `undef`, `poison`, `freeze`, `nsw`, `nuw`, `exact`, other poison-generating annotations, overshift, divide by zero and `sdiv INT_MIN/-1` |
+
+### M3 UNKNOWN and error reason codes
+
+| Kind | Stable codes |
+|---|---|
+| Unsupported value/IR | `UNKNOWN-UNSUPPORTED-CONSTANT`, `UNKNOWN-UNSUPPORTED-CAST`, `UNKNOWN-UNSUPPORTED-MEMORY-INSTRUCTION`, `UNKNOWN-UNSUPPORTED-CALL`, `UNKNOWN-UNSUPPORTED-EXCEPTION-INSTRUCTION`, `UNKNOWN-UNSUPPORTED-ATOMIC-INSTRUCTION`, `UNKNOWN-UNSUPPORTED-FLOATING-POINT`, `UNKNOWN-UNSUPPORTED-VECTOR`, `UNKNOWN-UNSUPPORTED-AGGREGATE`, `UNKNOWN-UNSUPPORTED-INSTRUCTION`, `UNKNOWN-UNSUPPORTED-TYPE` |
+| Undefined/special semantics | `UNKNOWN-UNDEF`, `UNKNOWN-POISON`, `UNKNOWN-FREEZE`, `UNKNOWN-NSW-NUW`, `UNKNOWN-EXACT`, `UNKNOWN-POISON-ANNOTATION`, `UNKNOWN-DIVIDE-BY-ZERO`, `UNKNOWN-SDIV-OVERFLOW`, `UNKNOWN-OVERSHIFT` |
+| Completeness/resource | `UNKNOWN-M3-LOOP`, `UNKNOWN-INSTRUCTION-LIMIT`, `UNKNOWN-STATE-LIMIT`, `UNKNOWN-SOLVER-TIMEOUT`, `UNKNOWN-SOLVER-UNKNOWN`, `UNKNOWN-SOLVER-FAILURE` |
+| Feasible program error | `REACHED-UNREACHABLE` |
+| Executor invariant failure | `INTERNAL-MISSING-SSA-BINDING`, `INTERNAL-INVALID-PHI-PREDECESSOR`, `INTERNAL-INVALID-SYMBOLIC-BINDING`, `INTERNAL-NO-FEASIBLE-SUCCESSOR`, `INTERNAL-INVALID-EXECUTOR-STATE`, `INTERNAL-SOLVER-ERROR`, `INTERNAL-EXPR-CONSTRUCTION` |
+
+### M3 test inventory
+
+`tests/ir/m3/scalar.ll`, `control.ll`, and `unknown.ll` cover every `icmp`,
+modular arithmetic, all required widths and casts, normal shifts/div/rem,
+definedness failures, diamond feasibility in all three combinations, select
+without a fork, switch cases/default/duplicate destinations, predecessor-aware
+and parallel PHIs, both return forms, `unreachable`, precise unsupported
+families, solver timeout, loop rejection, and repeated-run stability.
+Every unsupported-family check asserts both its stable reason code and exact
+`function:block:opcode#ordinal` termination location.
+`FormalExecutor.Unit` injects both-UNSAT, TIMEOUT, UNKNOWN, worker-failure and
+solver-internal results and checks missing-binding and Bool-constraint
+invariants. `FormalExecutor.Differential` exhausts three independent i8 domains
+and the complete i8 x i8 domain. The pinned Clang compiles the same hand-written
+IR into a native shared object, and every native function result is checked
+against the exactly one matching symbolic path and return Expr. This separately
+covers signed/unsigned branches, switch, casts and two-input selection without
+using an APInt formula as the concrete oracle.
+
+## M4 object memory, pointers and GEP
+
+The test-oriented executor consumes hand-written IR with `--m4` (its default
+mode retains M3 behavior); M0 preflight
+remains a separate static contract and does not yet delegate to M4. Full
+algorithms, status meanings and limitations are in
+[M4_MEMORY.md](M4_MEMORY.md).
+
+| Family | Executed | UNKNOWN / error boundary |
+|---|---|---|
+| Global constants | Zero and integer scalar, fixed nested array/struct integer and pointer initializers, null/global pointer and constant GEP pointer initializers; read-only constant global | External global, alias and unsupported aggregate member: UNKNOWN; `externally_initialized` entry bytes stay unknown until overwritten; write to read-only: `READ_ONLY_WRITE` |
+| Stack allocation | Concrete fixed-size `alloca`; fresh dynamic object ID and checked alloc-size multiplication | Symbolic count: `SYMBOLIC_ALLOCATION_SIZE`; scalable or oversized: UNKNOWN |
+| Memory access | Non-atomic/non-volatile integer and pointer `load/store`, DataLayout store size and endian order, checked bounds and alignment | Null/OOB/dead/definite misalignment: error, except `null_pointer_is_valid` address-zero accesses return UNKNOWN while address-zero memory is unmodeled; uninitialized bits, uncertain alignment, non-default address space: UNKNOWN |
+| GEP | First index, nested arrays, constant struct field with StructLayout padding, signed symbolic indices, one-past construction, plain `inbounds` checks including all-zero-index null GEP | Vector GEP, constant `inrange`, unsupported flags, overflow or unproved inbounds: UNKNOWN |
+| Pointer values | Null, guarded object/offset alternatives, pointer `eq/ne` and select, pointer store/load through shadow; null-derived unflagged GEP compares numeric offsets; object instances must match the current state's binding even when numeric IDs collide | Distinct constant globals with a mergeable `unnamed_addr`/`local_unnamed_addr` address, integer loads observing pointer-derived bytes (including partial overwrite and `memcpy`), arbitrary pointer bytes, lost shadow, foreign object instance, `inttoptr` and unrecoverable pointer/int round trip: UNKNOWN |
+| Pointer `llvm.memcpy` | Bounded concrete disjoint nonvolatile copy, preserving fully covered pointer shadows and invalidating partial destination shadows; zero-length no-op after supported argument-attribute checks | Unsupported parameter attributes (`nonnull`, `dereferenceable`, etc.), unproved zero-length alignment, symbolic length/offset, overlap, volatility, memmove and memset: UNKNOWN |
+| Resolution | SAT provenance candidates only; candidate range guard retained in constraints | Solver timeout/UNKNOWN and cap exhaustion: UNKNOWN; no adjacent-object conflation |
+
+M4 stable feasible errors are `NULL_DEREFERENCE`, `OUT_OF_BOUNDS`,
+`READ_ONLY_WRITE`, `DEAD_OBJECT_ACCESS`, and `MISALIGNED_ACCESS`.
+Incomplete reasons are `UNINITIALIZED_READ`, `POINTER_PROVENANCE_LOST`,
+`POINTER_RESOLUTION_INCOMPLETE`, `UNSUPPORTED_ADDRESS_SPACE`,
+`UNKNOWN-POINTER-COMPARISON`,
+`SYMBOLIC_ALLOCATION_SIZE`, `UNKNOWN-SCALABLE-TYPE`,
+`UNKNOWN-UNSUPPORTED-GLOBAL`, `UNKNOWN-INBOUNDS-GEP`,
+`UNKNOWN-ALLOCATION-LIMIT`, and `UNKNOWN-ALIGNMENT-UNDETERMINED`.
+Broken model invariants are `INTERNAL_MEMORY_MODEL_ERROR`. No completed M4
+execution is a full-program SAFE verdict.
+
+`FormalMemory.Unit` tests direct COW/shadow/bounds, foreign-ID collisions,
+overlapping logical intervals, mergeable/external-initialized globals,
+symbolic inbounds forks, `null_pointer_is_valid`, direct address-sensitive
+byte-marker and memcpy propagation assertions, mandatory validated error
+models, model-derived native ASan/UBSan replay for all four currently
+executable memory-error classes, and fixed-seed differential properties.
+`EveryReportedM4IRMemoryErrorModelIsNativelyReplayed` discovers all M4 lit
+entries expecting a memory error, requires an exact replay-ledger match, and
+validates and replays every error path model they report. The direct C++
+error-path tests likewise replay every reported model. This is a gate over
+the M4 test corpus, not arbitrary application replay.
+`FormalExecutor.Lit.M4` covers the IR families in
+`tests/ir/m4/`. `FormalMemory.Benchmark` asserts object sharing across 64
+forks and 128 stack objects. The standalone sanitized
+`tests/ir/m4/replay.c` gives native diagnostics for those four classes;
+dead-object access is not yet executable because lifetime intrinsics remain
+UNKNOWN. The two existing future-gate CTests remain skipped for M5/M8.
+
+## LLVM semantic families outside the M4 executor subset
 
 | Family | Status | Owner | Current boundary |
 |---|---|---:|---|
-| Integer opcodes, `icmp`, casts, PHI, branch, switch, return | UNKNOWN | M3 | IR is inspected but never interpreted |
-| Loads, stores, GEP, globals, stack objects, lifetime | UNKNOWN | M4 | No memory model exists |
-| Aggregates, vectors and memory intrinsics | UNKNOWN | M6 | Fixed/scalable vector use is classified `UNKNOWN` at preflight; planned bulk-memory intrinsics are admitted only as input-contract structure |
+| Loads, stores, GEP, globals, stack objects | SUPPORTED SUBSET | M4 | See [M4_MEMORY.md](M4_MEMORY.md); lifetime intrinsics remain UNKNOWN |
+| Aggregates, vectors and memory intrinsics | SUPPORTED SUBSET / UNKNOWN | M4/M6 | M4 handles fixed aggregate global initializers and bounded concrete `llvm.memcpy`; runtime aggregate operations, vectors, memmove and memset remain UNKNOWN |
 | Direct calls, recursion, heap and external models | UNKNOWN | M7 | Preflight only traverses direct defined callees |
-| Loops and path truncation | UNKNOWN | M8 | No scheduler or loop execution exists |
+| Loops and path truncation | UNKNOWN | M8 | M3's DFS scheduler rejects repeated blocks; no loop execution or loop-bound scheduling exists |
 | Floating point | UNKNOWN | post-V1 | No FP Expr nodes exist |
 | TLS, exceptions, RTTI, virtual dispatch, threads | UNKNOWN | post-V1 | Atomics/inline assembly are classified `UNKNOWN` at preflight |
 | Function pointers | UNKNOWN | M7 | Unresolved indirect calls are classified `UNKNOWN` at preflight |
-| SAFE/UNSAFE verdicts and counterexample replay | UNKNOWN | M3+ / M5 | M2 answers solver queries only; it does not execute IR or issue program verdicts |
+| SAFE/UNSAFE verdicts and model-injection replay | UNKNOWN | M5+ | M4 reports path completion/memory errors only; it has no formal registration/relation or replay runtime |
 
-The future capability-gate CTests are intentionally skipped. They document that
-path truncation, loop bounds, unsupported instruction execution and native
-UNSAFE replay cannot yet be classified by an executor.
+The remaining future capability-gate CTests are intentionally skipped. They
+document that bounded loop execution and native UNSAFE replay are not yet
+implemented.
 
 ## Explicit M0 opcode and intrinsic manifest
 

@@ -17,7 +17,7 @@ option(FORMAL_ENABLE_KLEE_DIFF "Enable KLEE differential tests" OFF)
 option(FORMAL_ENABLE_ALIVE2_TESTS "Enable Alive2 tests" OFF)
 option(FORMAL_ENABLE_SANITIZERS "Build project tests with ASan and UBSan" OFF)
 option(FORMAL_ENABLE_FUZZING "Build fuzz targets" OFF)
-option(FORMAL_BUILD_TESTS "Build M0/M1/M2 tests" ON)
+option(FORMAL_BUILD_TESTS "Build M0/M1/M2/M3 tests" ON)
 option(FORMAL_WARNINGS_AS_ERRORS
   "Treat warnings in Formal project sources as errors"
   OFF)
@@ -124,6 +124,27 @@ if(FORMAL_ENABLE_STP)
   target_link_libraries(FormalSTPWorker PRIVATE FormalSolver)
   formal_enable_sanitizers(FormalSTPWorker)
   formal_enable_project_warnings(FormalSTPWorker)
+
+  add_library(FormalExecutor STATIC
+    lib/Constraints.cpp
+    lib/Executor.cpp
+    lib/Memory.cpp
+    lib/Result.cpp
+    lib/State.cpp
+  )
+  target_include_directories(FormalExecutor PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  target_compile_features(FormalExecutor PUBLIC cxx_std_20)
+  target_link_libraries(FormalExecutor PUBLIC FormalSolver LLVMCore)
+  formal_enable_sanitizers(FormalExecutor)
+  formal_enable_project_warnings(FormalExecutor)
+
+  add_executable(FormalScalarExecutor tools/ScalarExecutorMain.cpp)
+  target_link_libraries(FormalScalarExecutor PRIVATE
+    FormalExecutor LLVMIRReader LLVMCore LLVMSupport)
+  formal_enable_sanitizers(FormalScalarExecutor)
+  formal_enable_project_warnings(FormalScalarExecutor)
 endif()
 
 if(FORMAL_BUILD_TESTS)
@@ -299,6 +320,107 @@ if(FORMAL_BUILD_TESTS)
       LABELS "unit;m2;solver;stp")
     formal_set_sanitizer_test_environment(FormalSolver.Unit)
     formal_set_stp_test_environment(FormalSolver.Unit)
+
+    add_executable(FormalExecutorUnitTests
+      tests/ExecutorUnitTest.cpp
+      tests/TestMain.cpp
+    )
+    target_link_libraries(FormalExecutorUnitTests PRIVATE
+      FormalExecutor FormalGTest LLVMAsmParser LLVMCore)
+    add_dependencies(FormalExecutorUnitTests FormalSTPWorker)
+    formal_enable_sanitizers(FormalExecutorUnitTests)
+    formal_enable_project_warnings(FormalExecutorUnitTests)
+
+    add_test(NAME FormalExecutor.Unit COMMAND FormalExecutorUnitTests)
+    set_tests_properties(FormalExecutor.Unit PROPERTIES
+      LABELS "unit;m3;executor")
+    formal_set_sanitizer_test_environment(FormalExecutor.Unit)
+    formal_set_stp_test_environment(FormalExecutor.Unit)
+
+    add_executable(FormalMemoryUnitTests
+      tests/MemoryUnitTest.cpp
+      tests/TestMain.cpp
+    )
+    target_link_libraries(FormalMemoryUnitTests PRIVATE
+      FormalExecutor FormalGTest LLVMAsmParser LLVMCore)
+    add_dependencies(FormalMemoryUnitTests FormalSTPWorker)
+    find_program(FORMAL_M4_NATIVE_SANITIZER_CC NAMES gcc)
+    if(NOT FORMAL_M4_NATIVE_SANITIZER_CC)
+      message(FATAL_ERROR "M4 model replay tests require GCC with ASan/UBSan")
+    endif()
+    set(FORMAL_M4_REPLAY_BINARY "${CMAKE_CURRENT_BINARY_DIR}/FormalM4Replay")
+    add_custom_command(
+      OUTPUT "${FORMAL_M4_REPLAY_BINARY}"
+      COMMAND "${FORMAL_M4_NATIVE_SANITIZER_CC}" -O0 -g
+        -fsanitize=address,undefined -fno-sanitize-recover=all
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/ir/m4/replay.c"
+        -o "${FORMAL_M4_REPLAY_BINARY}"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ir/m4/replay.c"
+      VERBATIM)
+    add_custom_target(FormalM4ReplayNative DEPENDS "${FORMAL_M4_REPLAY_BINARY}")
+    add_dependencies(FormalMemoryUnitTests FormalM4ReplayNative)
+    target_compile_definitions(FormalMemoryUnitTests PRIVATE
+      FORMAL_M4_REPLAY_BINARY="${FORMAL_M4_REPLAY_BINARY}"
+      FORMAL_M4_IR_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/tests/ir/m4")
+    formal_enable_sanitizers(FormalMemoryUnitTests)
+    formal_enable_project_warnings(FormalMemoryUnitTests)
+    add_test(NAME FormalMemory.Unit COMMAND FormalMemoryUnitTests)
+    set_tests_properties(FormalMemory.Unit PROPERTIES
+      LABELS "unit;m4;memory;property")
+    formal_set_sanitizer_test_environment(FormalMemory.Unit)
+    formal_set_stp_test_environment(FormalMemory.Unit)
+
+    add_executable(FormalMemoryBenchmark tests/MemoryBenchmark.cpp)
+    target_link_libraries(FormalMemoryBenchmark PRIVATE FormalExecutor LLVMCore)
+    formal_enable_sanitizers(FormalMemoryBenchmark)
+    formal_enable_project_warnings(FormalMemoryBenchmark)
+    add_test(NAME FormalMemory.Benchmark COMMAND FormalMemoryBenchmark)
+    set_tests_properties(FormalMemory.Benchmark PROPERTIES
+      LABELS "m4;memory;benchmark")
+    formal_set_sanitizer_test_environment(FormalMemory.Benchmark)
+
+    if(FORMAL_CLANG_EXECUTABLE)
+      set(FORMAL_M3_NATIVE_LIBRARY
+        "${CMAKE_CURRENT_BINARY_DIR}/libFormalM3DifferentialNative${CMAKE_SHARED_LIBRARY_SUFFIX}")
+      add_custom_command(
+        OUTPUT ${FORMAL_M3_NATIVE_LIBRARY}
+        COMMAND ${FORMAL_CLANG_EXECUTABLE} -O0 -fPIC -shared
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/ir/m3/differential.ll
+          -o ${FORMAL_M3_NATIVE_LIBRARY}
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tests/ir/m3/differential.ll
+        COMMENT "Compiling the independent M3 native differential oracle"
+        VERBATIM)
+      add_custom_target(FormalM3DifferentialNative
+        DEPENDS ${FORMAL_M3_NATIVE_LIBRARY})
+
+      add_executable(FormalExecutorDifferentialTests
+        tests/ExecutorDifferentialTest.cpp
+        tests/TestMain.cpp
+      )
+      target_compile_definitions(FormalExecutorDifferentialTests PRIVATE
+        FORMAL_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+        FORMAL_M3_NATIVE_LIBRARY="${FORMAL_M3_NATIVE_LIBRARY}")
+      target_link_libraries(FormalExecutorDifferentialTests PRIVATE
+        FormalExecutor FormalGTest LLVMIRReader LLVMCore LLVMSupport
+        ${CMAKE_DL_LIBS})
+      add_dependencies(FormalExecutorDifferentialTests
+        FormalSTPWorker FormalM3DifferentialNative)
+      formal_enable_sanitizers(FormalExecutorDifferentialTests)
+      formal_enable_project_warnings(FormalExecutorDifferentialTests)
+
+      add_test(NAME FormalExecutor.Differential
+        COMMAND FormalExecutorDifferentialTests)
+      set_tests_properties(FormalExecutor.Differential PROPERTIES
+        LABELS "m3;executor;differential;exhaustive;native")
+      formal_set_sanitizer_test_environment(FormalExecutor.Differential)
+      formal_set_stp_test_environment(FormalExecutor.Differential)
+    else()
+      add_capability_gate(
+        FormalExecutor.Differential
+        "M3 environment"
+        "the pinned Clang is unavailable, so the native differential oracle cannot be built"
+        "m3;executor;differential;exhaustive;native")
+    endif()
 
     add_executable(FormalSolverQueryEmitter tests/SolverQueryEmitter.cpp)
     target_link_libraries(FormalSolverQueryEmitter PRIVATE FormalSolver)
@@ -620,33 +742,33 @@ if(FORMAL_BUILD_TESTS)
       ${CMAKE_CURRENT_BINARY_DIR}/tests)
   set_tests_properties(FormalPass.Lit.M0M1 PROPERTIES
     LABELS "lit;ir;m0;m1"
-    # The aggregate runs every IR fixture through the pinned host opt.  A
-    # multi-gigabyte Debug opt validates its digest in each process, so the
+    # The aggregate discovers all IR fixtures.  Pre-M3 fixtures start the
+    # multi-gigabyte Debug opt and validate its digest in each process, so the
     # suite needs a larger bound than a single integration test.
     TIMEOUT 14400)
   formal_set_sanitizer_test_environment(FormalPass.Lit.M0M1)
+  add_test(NAME FormalExecutor.Lit.M3
+    COMMAND ${FORMAL_LLVM_LIT_EXECUTABLE} -sv --filter=m3/
+      ${CMAKE_CURRENT_BINARY_DIR}/tests)
+  set_tests_properties(FormalExecutor.Lit.M3 PROPERTIES
+    LABELS "lit;ir;m3;executor")
+  formal_set_sanitizer_test_environment(FormalExecutor.Lit.M3)
+  add_test(NAME FormalExecutor.Lit.M4
+    COMMAND ${FORMAL_LLVM_LIT_EXECUTABLE} -sv --filter=m4/
+      ${CMAKE_CURRENT_BINARY_DIR}/tests)
+  set_tests_properties(FormalExecutor.Lit.M4 PROPERTIES
+    LABELS "lit;ir;m4;memory")
+  formal_set_sanitizer_test_environment(FormalExecutor.Lit.M4)
   add_capability_gate(
     FormalPass.UNSAFE.NativeReplay
     "M5"
-    "there is no executor, concrete model, or replay runtime"
+    "there is no registered concrete model or replay runtime"
     "unsafe;replay"
-  )
-  add_capability_gate(
-    FormalPass.UNKNOWN.PathTruncation
-    "M3/M8"
-    "path scheduling and truncation are not implemented"
-    "unknown;path"
   )
   add_capability_gate(
     FormalPass.UNKNOWN.LoopBound
     "M8"
     "loop execution and per-state backedge bounds are not implemented"
     "unknown;loop"
-  )
-  add_capability_gate(
-    FormalPass.UNKNOWN.UnsupportedInstruction
-    "M3/M9"
-    "instruction execution and UNKNOWN verdicts are not implemented"
-    "unknown;unsupported"
   )
 endif()

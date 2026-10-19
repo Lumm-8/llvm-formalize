@@ -6,6 +6,7 @@ config.formal_opt = r"@FORMAL_PINNED_OPT_EXECUTABLE@"
 config.formal_filecheck = r"@FORMAL_FILECHECK_EXECUTABLE@"
 config.formal_not = r"@FORMAL_NOT_EXECUTABLE@"
 config.formal_plugin = r"@CMAKE_CURRENT_BINARY_DIR@/FormalPass@CMAKE_SHARED_MODULE_SUFFIX@"
+config.formal_scalar_executor = r"@CMAKE_CURRENT_BINARY_DIR@/FormalScalarExecutor"
 
 lit_config.load_config(
     config, r"@CMAKE_CURRENT_SOURCE_DIR@/tests/lit.cfg.py")

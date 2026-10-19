@@ -1,17 +1,18 @@
-# M0/M1/M2 Soundness and Trust Boundary
+# M0–M4 Soundness and Trust Boundary
 
 ## Claim boundary
 
-M0, M1 and M2 do not verify a C/C++ program and do not emit `SAFE` or `UNSAFE`.
+M0 through M4 do not verify a C/C++ program and do not emit `SAFE` or `UNSAFE`.
 M0 establishes that a module satisfies a narrow input contract. M1 provides a
 solver-independent expression language. A successful M0 result is
 `status: VALIDATED`, `reason: VALID`, and `verdict: null`; it is not evidence
 that the module's instructions have been symbolically executed.
 
-M2 supplies a solver query interface and STP translation boundary. No path
-scheduler, LLVM instruction executor, memory model, call executor, program
-verdict aggregation, registration API, state machine, or replay runtime is part
-of this scope.
+M2 supplies a solver query interface and STP translation boundary. M3 adds a
+single-function scalar path executor. M4 adds an object-memory subset to that
+executor. No call executor, formal input/output registration API, full-program
+verdict, or model-injection replay runtime is part of this scope. See
+[M4_MEMORY.md](M4_MEMORY.md) for the executable memory contract.
 
 ## M0 preflight guarantees
 
@@ -328,5 +329,156 @@ violate the immediate-timeout contract. An artifact-write failure remains an
 internal diagnostic failure and is reported without changing a solver failure
 into a verification verdict.
 
-M2 does not reinterpret M0 `VALIDATED` as `SAFE` and implements no M3
-instruction semantics.
+M2 does not reinterpret M0 `VALIDATED` as `SAFE`.
+
+## M3 scalar-execution boundary
+
+M3 executes one defined, non-variadic LLVM function whose integer arguments
+are explicitly bound by the test/client harness to bitvector Expr values. Its
+single `StackFrame` is deliberately stored in a frame vector so later call
+support can extend the representation, but M3 never pushes a frame and rejects
+every call. `ExecutionState` owns the current function/block/instruction,
+actual predecessor, frame-local SSA bindings, path constraints, status, stable
+ID, depth, instruction count, visited blocks, and termination reason/location.
+A deterministic vector-backed DFS worklist explores states; result order is
+normalized by stable state ID.
+
+LLVM integer values remain bitvectors at their declared width. Constants are
+constructed from their complete `APInt`, including non-host widths. Arithmetic
+uses Expr fixed-width operations and never narrows through a host integer.
+Comparison produces Bool and is converted explicitly to BV1 when it becomes an
+LLVM i1 SSA value. Branch and select conditions cross back through the one
+explicit BV1-to-Bool helper; no STP implicit coercion is relied upon. Signed and
+unsigned comparisons and division/remainder remain distinct. Switch case
+constants likewise retain their full APInt width.
+
+At a basic-block entry, every consecutive PHI reads the incoming operand for
+the recorded predecessor from the same copied pre-entry `StackFrame`. Only
+after all incoming operands resolve are the PHI bindings written. A missing SSA
+binding, missing actual predecessor, or width mismatch is an internal executor
+error; it is never repaired with a fresh symbol.
+
+For a conditional branch M3 queries `mayBeTrue(C, cond)` and
+`mayBeTrue(C, !cond)` independently. A switch similarly queries each equality
+guard and the conjunction of all case inequalities for default. SAT successors
+receive their guard as a constraint; UNSAT successors alone are pruned.
+TIMEOUT, backend UNKNOWN and worker failure terminate the corresponding guarded
+path as incomplete. Solver internal errors stay internal errors. If every
+successor is reported UNSAT, the executor records an invariant failure rather
+than silently discarding the state.
+
+Unflagged integer operations have ordinary fixed-width semantics only on their
+LLVM-defined domain. Division/remainder nonzero, signed-division overflow and
+shift range are split into defined and undefined guards with solver queries;
+the feasible undefined side is an incomplete path with a precise reason. M3
+does not yet propagate poison, so `nsw`, `nuw`, `exact`, other poison-producing
+annotations, explicit poison/undef and `freeze` stop the affected path as
+UNKNOWN. Reaching `unreachable` on a feasible path is a distinct path error.
+Repeated basic blocks are rejected as `UNKNOWN-M3-LOOP`; M3 neither unrolls a
+loop nor assumes an exit.
+
+In the M3 acceptance baseline, any memory or pointer operation, call, EH, atomic, floating-point, vector,
+aggregate, unsupported constant/type/opcode, or pointer/integer cast terminates
+the affected path with its stable UNKNOWN reason. Consequently that M3 subset is suitable
+only for hand-written or otherwise verified scalar IR. It does not support
+ordinary Clang `-O0` functions containing stack memory, and it makes no claim
+about globals, heap objects, pointer provenance, structures, registration,
+calls, or loop bounds.
+
+`M3_EXECUTOR_COMPLETE` means every feasible scalar path in this restricted
+executor returned normally. It is not `SAFE`, because there is no registered
+input/output relation or memory/call semantics. Any internal-error path makes
+the analysis internally invalid; otherwise a feasible error dominates an
+incomplete path, an incomplete path produces UNKNOWN, and only all-completed
+paths produce the M3-local completion status.
+
+The M3 differential test oracle is independent of the Formal Expr evaluator:
+the pinned Clang compiles the hand-written scalar IR to a native shared object,
+the test invokes those machine-code functions for every value in three complete
+i8 domains and one complete i8 x i8 domain, and then checks that exactly one
+symbolic path matches each input and returns the native byte. The native oracle
+does not reuse the test's APInt/Expr evaluation to compute the expected result.
+
+## M4 object-memory boundary
+
+M4 augments the same one-frame executor with immutable object identities,
+guarded pointer provenance, a persistent byte-array ObjectState and
+object-level copy-on-write AddressSpace. Global and stack allocations use the
+Module DataLayout's allocated size and ABI/explicit alignment. Memory accesses
+accept an object candidate only when its object instance is the same instance
+bound in the current state; reusing a numeric object ID from another run
+cannot authorize a dereference or pointer comparison. Loads/stores use store
+size. GEP traverses its source element type and StructLayout, checks
+offset arithmetic, and never dereferences at construction. A one-past pointer
+may exist; a nonzero access at that offset is a feasible bounds error.
+`unnamed_addr`/`local_unnamed_addr` constant globals are not assumed to have
+distinct addresses from other constant globals; cross-object pointer equality
+is UNKNOWN when merging may be permitted. The initializer of an
+`externally_initialized` global is not an entry-state value, so a read before
+an explicit covering write is UNKNOWN rather than a fixed result.
+Logical object bases are internal bookkeeping, not target pointer values.
+Object-pointer stores mark their memory bytes address-sensitive; integer loads
+that observe any such byte return UNKNOWN, including after partial overwrite
+or `memcpy`. Complete ordinary overwrites clear the marker. Constant GEPs
+with `inrange` return UNKNOWN before their derived pointer can be used;
+all-zero-index `inbounds` GEPs may retain a null base as LLVM permits.
+
+Memory errors are path-local errors, not program `UNSAFE` verdicts. Null,
+definite out-of-bounds, read-only write, dead object and definite misalignment
+are errors. Uninitialized required bits, unknown alignment, lost pointer
+provenance, unsupported address spaces/types/globals, candidate caps, solver
+nonanswers and unproved inbounds preconditions are incomplete/UNKNOWN. An
+internal memory-model invariant failure is INTERNAL_ERROR. Only an untruncated
+set of SAT candidate paths may contribute to executor completion.
+In a function marked `null_pointer_is_valid`, address-space-zero null may be
+dereferenced. Since address-zero memory is not modeled, nonzero load/store and
+`llvm.memcpy` accesses there are UNKNOWN, not `NULL_DEREFERENCE`; unmarked
+functions retain the ordinary null error.
+Even when its length is zero, `llvm.memcpy` is not certified as a no-op until
+call-argument attributes are checked. Unsupported constraints such as
+`nonnull` or `dereferenceable`, and unproved zero-length `align` constraints,
+return UNKNOWN. A `noundef` argument is resolved before the no-op path, so
+poison or undef operands cannot silently complete.
+Every reported executable memory-error `PathResult` retains a validated SAT
+model. If the witness query times out or returns UNKNOWN, the path is
+incomplete; a missing/invalid model or inconsistent UNSAT is INTERNAL_ERROR,
+never an unmodeled `Error`. M4 tests derive native ASan/UBSan replay inputs
+from models for null, bounds, alignment and read-only-write errors. Dead-object
+access has no executable lifetime transition yet in the supported subset.
+`FormalMemory.EveryReportedM4IRMemoryErrorModelIsNativelyReplayed` now
+discovers every M4 lit entry whose expectation reports a memory-error reason.
+Its explicit replay ledger must match that set exactly; for every error path
+returned by each entry it validates the SAT model, concretizes any symbolic
+input from that model, and requires an ASan/UBSan diagnostic from the matching
+native operation. The existing direct C++ error tests also replay every error
+path they report. This is a gate for the current M4 test corpus, not an M5
+model-injection runtime or a guarantee about arbitrary applications.
+
+An ObjectState tracks per-byte known bits, so `i1` and `i65` stores do not
+confer false initialization on padding bits. Pointer shadows preserve
+provenance across a full pointer store/load and are invalidated by overlapping
+ordinary writes. A supported concrete `llvm.memcpy` copies a fully covered
+shadow with its bytes; partial copies invalidate destination shadows without
+inventing provenance. No symbolic pointer bytes are reinterpreted as an
+arbitrary known object. A state fork shares unmodified ObjectStates; the first
+write in one branch clones the object and its shadow metadata. A live write
+handle at fork time forces a copy in the new branch, so a pre-fork handle
+cannot mutate both branches.
+
+Alignment uses the object's guaranteed alignment. Logical addresses are
+deterministic serializations, not evidence of native address low bits. A native
+allocation may exceed its required alignment, so an access requiring more
+alignment than the object's guarantee is UNKNOWN rather than spuriously
+reported aligned or misaligned. Zero-sized objects have unique logical bases
+but no nonzero legal access. An unflagged GEP from null retains its numeric
+offset for pointer equality; a nonzero null-derived address has no recoverable
+object provenance for dereference and is UNKNOWN. Global aliases and
+unsupported aggregate members, calls, heap, unsupported bulk memory
+intrinsics, formal input/output
+registration, loop unrolling and arbitrary C++ objects remain unsupported.
+
+The test-oriented scalar driver requires `--m4` for memory execution and then
+prints `M4_EXECUTOR_COMPLETE` for the library's `ExecutionStatus::Complete`.
+The default driver mode preserves the M3 `M3_EXECUTOR_COMPLETE` label. M4
+completion means only that all supported paths completed; it
+cannot be promoted to `SAFE` without the M5 registration and relation model.

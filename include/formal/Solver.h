@@ -173,6 +173,7 @@ private:
 // Fault injection is declared only for the solver unit-test target.  It is not
 // part of the supported solver API.
 void setSTPSolverWorkerTestMode(int Mode);
+void advanceSTPSolverWorkerTestClock(std::chrono::milliseconds Amount);
 bool isPinnedSTPCompilationProfileForTest(const std::string &Profile);
 #endif
 

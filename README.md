@@ -42,3 +42,18 @@ chat](https://discord.gg/xS7Z362),
 
 The LLVM project has adopted a [code of conduct](https://llvm.org/docs/CodeOfConduct.html) for
 participants to all modes of communication within the project.
+
+## FormalPass M3 scalar-executor tests
+
+M3 is a test-oriented, single-function scalar LLVM IR executor. It does not
+support memory, calls, the registration API, ordinary Clang `-O0` stack IR, or
+program-level `SAFE`/`UNSAFE` verdicts.
+
+After configuring a build with the pinned LLVM and STP dependencies, run:
+
+```sh
+cmake --build <build-dir> --target FormalExecutorUnitTests FormalExecutorDifferentialTests FormalScalarExecutor
+ctest --test-dir <build-dir> --output-on-failure -L '^m3$'
+```
+
+The focused IR suite can also be run through the `FormalExecutor.Lit.M3` CTest.

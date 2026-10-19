@@ -66,6 +66,36 @@ std::atomic<std::uint64_t> NextQueryId{1};
 std::atomic<std::uint64_t> NextContextId{1};
 #ifdef FORMAL_SOLVER_ENABLE_TEST_FAULTS
 std::atomic<int> WorkerTestMode{0};
+std::atomic<bool> WorkerTestClockEnabled{false};
+std::atomic<std::int64_t> WorkerTestClockNanoseconds{0};
+
+std::chrono::steady_clock::time_point solverClockNow() {
+  using Clock = std::chrono::steady_clock;
+  if (!WorkerTestClockEnabled.load())
+    return Clock::now();
+  const auto Ticks = std::chrono::duration_cast<Clock::duration>(
+      std::chrono::nanoseconds(WorkerTestClockNanoseconds.load()));
+  return Clock::time_point(Ticks);
+}
+
+void advanceSolverTestClock(std::chrono::steady_clock::duration Amount) {
+  const auto Nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               Amount)
+                               .count();
+  std::int64_t Current = WorkerTestClockNanoseconds.load();
+  while (true) {
+    const std::int64_t Next =
+        Nanoseconds > 0 && Current > INT64_MAX - Nanoseconds
+            ? INT64_MAX
+            : Current + Nanoseconds;
+    if (WorkerTestClockNanoseconds.compare_exchange_weak(Current, Next))
+      return;
+  }
+}
+#else
+std::chrono::steady_clock::time_point solverClockNow() {
+  return std::chrono::steady_clock::now();
+}
 #endif
 
 constexpr int WorkerRequestReadFailureExitCode = 123;
@@ -1646,31 +1676,31 @@ struct STPSolver::Impl {
                    const std::vector<ArrayModelRequest> &Arrays) {
     const std::uint64_t QueryId = NextQueryId.fetch_add(1);
     if (Options.Timeout.count() == 0) {
-      const auto Started = std::chrono::steady_clock::now();
+      const auto Started = solverClockNow();
       SolverResult Result = baseResult(QueryId);
       Result.Status = SolverStatus::Timeout;
       Result.Metadata.Reason = SolverReason::Timeout;
       Result.Metadata.Detail =
           "zero timeout expired before query validation or STP initialization";
-      Result.Metadata.Elapsed = std::chrono::steady_clock::now() - Started;
+      Result.Metadata.Elapsed = solverClockNow() - Started;
       saveQuery(Result, Kind, {}, nullptr, false, false);
       return Result;
     }
 
     const std::uint64_t ContextId = NextContextId.fetch_add(1);
-    const auto Started = std::chrono::steady_clock::now();
+    const auto Started = solverClockNow();
     using Clock = std::chrono::steady_clock;
     const std::optional<Clock::time_point> Deadline =
         makeDeadline(Started, Options.Timeout);
     auto DeadlineExpired = [&]() {
-      return Deadline && Clock::now() >= *Deadline;
+      return Deadline && solverClockNow() >= *Deadline;
     };
     auto TimeoutResult = [&](std::string Detail) {
       SolverResult Result = baseResult(QueryId);
       Result.Status = SolverStatus::Timeout;
       Result.Metadata.Reason = SolverReason::Timeout;
       Result.Metadata.Detail = std::move(Detail);
-      Result.Metadata.Elapsed = std::chrono::steady_clock::now() - Started;
+      Result.Metadata.Elapsed = solverClockNow() - Started;
       const bool AssertTarget = Kind == QueryKind::MayBeTrue ||
                                 Kind == QueryKind::MustBeTrue;
       saveQuery(Result, Kind, Constraints, Target, AssertTarget,
@@ -1682,7 +1712,7 @@ struct STPSolver::Impl {
       Result.Status = SolverStatus::InternalError;
       Result.Metadata.Reason = SolverReason::InvalidQuery;
       Result.Metadata.Detail = std::move(Detail);
-      Result.Metadata.Elapsed = std::chrono::steady_clock::now() - Started;
+      Result.Metadata.Elapsed = solverClockNow() - Started;
       const bool AssertTarget = Kind == QueryKind::MayBeTrue ||
                                 Kind == QueryKind::MustBeTrue;
       saveQuery(Result, Kind, Constraints, Target, AssertTarget,
@@ -1800,16 +1830,13 @@ struct STPSolver::Impl {
     int WorkerStatus = 0;
     bool TimedOut = false;
     bool WorkerObservedAfterDeadline = false;
-#ifdef FORMAL_SOLVER_ENABLE_TEST_FAULTS
-    if (WorkerTestMode.load() == 28 && Deadline)
-      std::this_thread::sleep_until(*Deadline);
-#endif
     while (true) {
       pid_t Waited = ::waitpid(Worker, &WorkerStatus, WNOHANG);
       if (Waited == Worker) {
 #ifdef FORMAL_SOLVER_ENABLE_TEST_FAULTS
-        if (WorkerTestMode.load() == 22 && Deadline)
-          std::this_thread::sleep_until(*Deadline);
+        if ((WorkerTestMode.load() == 22 || WorkerTestMode.load() == 28) &&
+            Deadline)
+          advanceSolverTestClock(*Deadline - solverClockNow());
 #endif
         WorkerObservedAfterDeadline = DeadlineExpired();
         break;
@@ -1918,7 +1945,7 @@ struct STPSolver::Impl {
     ::unlink(ResultPath);
 #ifdef FORMAL_SOLVER_ENABLE_TEST_FAULTS
     if (WorkerTestMode.load() == 24 && Deadline)
-      std::this_thread::sleep_until(*Deadline);
+      advanceSolverTestClock(*Deadline - solverClockNow());
 #endif
     if (!Read)
       return workerFailure(Kind, Constraints, Target, QueryId, Started,
@@ -1936,7 +1963,7 @@ struct STPSolver::Impl {
                            Arrays);
 #ifdef FORMAL_SOLVER_ENABLE_TEST_FAULTS
     if ((WorkerTestMode.load() == 26 || WorkerTestMode.load() == 27) && Deadline)
-      std::this_thread::sleep_until(*Deadline);
+      advanceSolverTestClock(*Deadline - solverClockNow());
 #endif
 
     if (Result.Status == SolverStatus::Sat) {
@@ -2034,9 +2061,9 @@ struct STPSolver::Impl {
     }
 #ifdef FORMAL_SOLVER_ENABLE_TEST_FAULTS
     if (WorkerTestMode.load() == 25 && Deadline)
-      std::this_thread::sleep_until(*Deadline);
+      advanceSolverTestClock(*Deadline - solverClockNow());
 #endif
-    const auto Completed = std::chrono::steady_clock::now();
+    const auto Completed = solverClockNow();
     if (Result.Status != SolverStatus::InternalError && Deadline &&
         Completed >= *Deadline)
       return TimeoutResult(
@@ -2310,7 +2337,7 @@ struct STPSolver::Impl {
     Result.Status = SolverStatus::InternalError;
     Result.Metadata.Reason = SolverReason::BackendFailure;
     Result.Metadata.Detail = std::move(Detail);
-    Result.Metadata.Elapsed = std::chrono::steady_clock::now() - Started;
+    Result.Metadata.Elapsed = solverClockNow() - Started;
     bool AssertTarget = Kind == QueryKind::MayBeTrue ||
                         Kind == QueryKind::MustBeTrue;
     saveQuery(Result, Kind, Constraints, Target, AssertTarget,
@@ -2328,7 +2355,7 @@ struct STPSolver::Impl {
     Result.Status = SolverStatus::Unknown;
     Result.Metadata.Reason = SolverReason::WorkerFailure;
     Result.Metadata.Detail = std::move(Detail);
-    Result.Metadata.Elapsed = std::chrono::steady_clock::now() - Started;
+    Result.Metadata.Elapsed = solverClockNow() - Started;
     const bool AssertTarget = Kind == QueryKind::MayBeTrue ||
                               Kind == QueryKind::MustBeTrue;
     saveQuery(Result, Kind, Constraints, Target, AssertTarget,
@@ -2538,7 +2565,23 @@ STPSolver::STPSolver(STPSolverOptions Options)
 STPSolver::~STPSolver() = default;
 
 #ifdef FORMAL_SOLVER_ENABLE_TEST_FAULTS
-void setSTPSolverWorkerTestMode(int Mode) { WorkerTestMode.store(Mode); }
+void setSTPSolverWorkerTestMode(int Mode) {
+  WorkerTestMode.store(Mode);
+  const bool UsesDeterministicDeadline = Mode == 22 || Mode == 24 ||
+                                         Mode == 25 || Mode == 26 ||
+                                         Mode == 27 || Mode == 28;
+  using Clock = std::chrono::steady_clock;
+  const auto Base = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        Clock::now().time_since_epoch())
+                        .count();
+  WorkerTestClockNanoseconds.store(Base);
+  WorkerTestClockEnabled.store(UsesDeterministicDeadline);
+}
+
+void advanceSTPSolverWorkerTestClock(std::chrono::milliseconds Amount) {
+  if (Amount.count() > 0)
+    advanceSolverTestClock(Amount);
+}
 
 bool isPinnedSTPCompilationProfileForTest(const std::string &Profile) {
   return stpCompilationProfileMismatch(Profile).empty();
