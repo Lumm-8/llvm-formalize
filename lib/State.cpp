@@ -47,13 +47,13 @@ ExecutionState::ExecutionState(std::uint64_t Id, llvm::Function *Function)
 }
 
 bool ExecutionState::hasVisited(const llvm::BasicBlock *Block) const noexcept {
-  return VisitedBlocks.find(Block) != VisitedBlocks.end();
+  return frame().hasVisited(Block);
 }
 
 void ExecutionState::markVisited(const llvm::BasicBlock *Block) {
   if (!Block)
     throw std::invalid_argument("cannot mark a null basic block visited");
-  VisitedBlocks.insert(Block);
+  frame().markVisited(Block);
 }
 
 } // namespace formal

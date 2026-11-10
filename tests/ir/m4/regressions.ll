@@ -119,7 +119,8 @@ entry:
   call void @llvm.memcpy.p0.p0.i64(ptr %other, ptr %slot, i64 4, i1 false)
   ret void
 }
-; MEMCPY-OVERLAP: status=INCOMPLETE reason=UNKNOWN-UNSUPPORTED-MEMORY-INSTRUCTION
+; MEMCPY-OVERLAP: M4 status ERROR
+; MEMCPY-OVERLAP: status=ERROR reason=OVERLAPPING_MEMCPY
 
 define void @memcpy_zero() {
 entry:

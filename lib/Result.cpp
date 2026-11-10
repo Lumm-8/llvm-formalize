@@ -47,9 +47,21 @@ const char *toReasonCode(IncompletenessReason Reason) noexcept {
   case IncompletenessReason::UnsupportedType:
     return "UNKNOWN-UNSUPPORTED-TYPE";
   case IncompletenessReason::LoopUnsupported:
-    return "UNKNOWN-M3-LOOP";
+    return "UNKNOWN-LOOP-UNSUPPORTED";
+  case IncompletenessReason::IrreducibleCycle:
+    return "UNKNOWN-IRREDUCIBLE-CYCLE";
+  case IncompletenessReason::LoopMetadataLost:
+    return "UNKNOWN-LOOP-METADATA-LOST";
+  case IncompletenessReason::LoopBound:
+    return "UNKNOWN-LOOP-BOUND";
+  case IncompletenessReason::WallTimeLimit:
+    return "UNKNOWN-WALL-TIME-LIMIT";
+  case IncompletenessReason::SolverQueryLimit:
+    return "UNKNOWN-SOLVER-QUERY-LIMIT";
   case IncompletenessReason::InstructionLimit:
     return "UNKNOWN-INSTRUCTION-LIMIT";
+  case IncompletenessReason::CallDepthLimit:
+    return "UNKNOWN-CALL-DEPTH";
   case IncompletenessReason::StateLimit:
     return "UNKNOWN-STATE-LIMIT";
   case IncompletenessReason::SolverTimeout:
@@ -70,6 +82,8 @@ const char *toReasonCode(IncompletenessReason Reason) noexcept {
     return "UNSUPPORTED_ADDRESS_SPACE";
   case IncompletenessReason::SymbolicAllocationSize:
     return "SYMBOLIC_ALLOCATION_SIZE";
+  case IncompletenessReason::AllocationFailureAssumed:
+    return "UNKNOWN-ALLOCATION-FAILURE-ASSUMED";
   case IncompletenessReason::ScalableType:
     return "UNKNOWN-SCALABLE-TYPE";
   case IncompletenessReason::UnsupportedGlobal:
@@ -80,6 +94,22 @@ const char *toReasonCode(IncompletenessReason Reason) noexcept {
     return "UNKNOWN-ALLOCATION-LIMIT";
   case IncompletenessReason::AlignmentUndetermined:
     return "UNKNOWN-ALIGNMENT-UNDETERMINED";
+  case IncompletenessReason::EntryAttributeConflict:
+    return "UNKNOWN-ENTRY-ATTRIBUTE-CONFLICT";
+  case IncompletenessReason::RegistrationUnsupported:
+    return "UNKNOWN-REGISTRATION-UNSUPPORTED";
+  case IncompletenessReason::SymbolicRegistrationSize:
+    return "UNKNOWN-SYMBOLIC-REGISTRATION-SIZE";
+  case IncompletenessReason::RegistrationName:
+    return "UNKNOWN-REGISTRATION-NAME";
+  case IncompletenessReason::RegistrationOverlap:
+    return "UNKNOWN-REGISTRATION-OVERLAP";
+  case IncompletenessReason::UseBeforeInput:
+    return "UNKNOWN-USE-BEFORE-INPUT";
+  case IncompletenessReason::RegistrationDescriptorMismatch:
+    return "UNKNOWN-REGISTRATION-DESCRIPTOR-MISMATCH";
+  case IncompletenessReason::DeadRegisteredOutput:
+    return "UNKNOWN-DEAD-REGISTERED-OUTPUT";
   }
   return "UNKNOWN-INTERNAL-REASON";
 }
@@ -118,6 +148,12 @@ const char *toReasonCode(PathErrorReason Reason) noexcept {
     return "NONE";
   case PathErrorReason::ReachedUnreachable:
     return "REACHED-UNREACHABLE";
+  case PathErrorReason::NoreturnViolation:
+    return "NORETURN_VIOLATION";
+  case PathErrorReason::AbortCalled:
+    return "ABORT_CALLED";
+  case PathErrorReason::AssertionFailed:
+    return "ASSERTION_FAILED";
   case PathErrorReason::NullDereference:
     return "NULL_DEREFERENCE";
   case PathErrorReason::OutOfBounds:
@@ -126,8 +162,16 @@ const char *toReasonCode(PathErrorReason Reason) noexcept {
     return "READ_ONLY_WRITE";
   case PathErrorReason::DeadObjectAccess:
     return "DEAD_OBJECT_ACCESS";
+  case PathErrorReason::UseAfterFree:
+    return "USE_AFTER_FREE";
+  case PathErrorReason::InvalidFree:
+    return "INVALID_FREE";
+  case PathErrorReason::DoubleFree:
+    return "DOUBLE_FREE";
   case PathErrorReason::MisalignedAccess:
     return "MISALIGNED_ACCESS";
+  case PathErrorReason::OverlappingMemcpy:
+    return "OVERLAPPING_MEMCPY";
   }
   return "INTERNAL-ERROR-REASON";
 }

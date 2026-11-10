@@ -1,11 +1,11 @@
-# FormalPass M0–M4 Support Matrix
+# FormalPass M0–M8 Support Matrix
 
-This matrix is the executable contract for the implemented M0 through M4 scope.
+This matrix is the executable contract for the implemented M0 through M8 scope.
 `SUPPORTED` means the named behavior is implemented and tested at its stated
 layer. For M0 through M2 it does not mean that LLVM instructions are
 symbolically executed; M3 adds only the scalar instruction subset below.
 `REJECTED` means preflight deterministically produces an `INVALID_TASK` result.
-`UNKNOWN` identifies unsupported semantics; M0 through M4 never turn one
+`UNKNOWN` identifies unsupported semantics; M0 through M8 never turn one
 of these cases into `SAFE`. `EXPERIMENTAL` is not used by M0/M1.
 
 ## M0 plugin and input contract
@@ -19,14 +19,14 @@ of these cases into `SAFE`. `EXPERIMENTAL` is not used by M0/M1.
 | Missing/declaration/wrong-signature entry | REJECTED | M0 | `tests/ir/m0-entry-errors.ll` |
 | Local, available-externally, weak/interposable, or non-C calling-convention entry | REJECTED | M0 | `tests/ir/m0-entry-errors.ll` |
 | Non-C function or call-site calling convention in the reachable call graph | UNKNOWN | M0 | Every `CallBase` and reachable definition must use the C convention; the call-site/callee mismatch case is covered by `FormalPassCallSite` and `tests/ir/m0-unsupported-contract.ll` |
-| ABI-affecting function, parameter and call-site attributes (`byval`, `sret`, `inalloca`, `preallocated`, `noalias`, and related attributes) | UNKNOWN | M7 | M0 relies on LLVM Verifier for structural validity but does not interpret or certify these ABI semantics; an executor must gate/model them before any `SAFE` result |
+| ABI-affecting function, parameter and call-site attributes | MODELED SUBSET / UNKNOWN | M7 | Defined direct calls validate concrete `nonnull`, `dereferenceable`, `align`, `byval`, `sret`, and selected effect attributes; unproved promises, `inalloca`, `preallocated`, and other forms return UNKNOWN. See [M7_CALLS_HEAP.md](M7_CALLS_HEAP.md) |
 | Linux x86_64, little-endian, 64-bit default pointers | SUPPORTED | M0 | Preflight scope only; `tests/ir/m0-valid.ll` |
 | Missing triple or DataLayout | REJECTED | M0 | `tests/ir/m0-missing-triple.ll` and `FormalPassTargetProperties`; `opt` may inject a default layout before plugin execution, so the empty-layout branch is unit-tested |
 | Other target triples or incompatible layouts | REJECTED | M0 | `tests/ir/m0-target-contract.ll`, `tests/ir/m0-incompatible-layout.ll` |
 | Missing/unrecognized producer metadata | REJECTED | M0 | Default fail-closed; trusted hand-written IR requires explicit `-formal-allow-unversioned-ir` and records a warning; `tests/ir/m0-missing-producer.ll` |
 | Runtime host `opt` identity, size and SHA-256 | REJECTED ON MISMATCH | M0 | Hashes the running executable image, not only its pathname; known-vector/same-size-different-content unit tests and `RuntimeHostDigestMismatch` load a test-only wrong-digest plugin under the correct pinned `opt` |
-| Reachable direct/aliased callee with a body | SUPPORTED | M0 | Every alias in the resolution chain and the final function must have an exact, non-interposable definition; strong alias success remains covered by `tests/ir/m0-registration-and-limits.ll`; execution remains M7 |
-| Reachable non-intrinsic declaration | UNKNOWN | M0/M7 | Unsupported external semantics are incomplete, not malformed; `tests/ir/m0-reachable-declaration.ll` |
+| Reachable direct/aliased callee with a body | SUPPORTED | M0/M7 | Every alias in the resolution chain and the final function must have an exact, non-interposable definition; M0 preflight is covered by `tests/ir/m0-registration-and-limits.ll`; M7 executes single and chained aliases with normal frames, returns, and pointer effects in [`alias-calls.ll`](../tests/ir/m7/alias-calls.ll) |
+| Reachable non-intrinsic declaration | MODELED ALLOWLIST / UNKNOWN | M0/M7 | Preflight admits only M7's named allocator, byte-memory, and termination models; the executor validates their ABI before execution. Other declarations remain UNKNOWN; `tests/ir/m0-reachable-declaration.ll`, `FormalExecutor.Lit.M7` |
 | Reachable weak/interposable definition or alias | REJECTED | M0 | The module does not contain the exact runtime body; weak/linkonce/ODR aliases are rejected before following their aliasees; `tests/ir/m0-reachable-declaration.ll`, `tests/ir/m0-alias-contract.ll` |
 | Unresolved function pointer | UNKNOWN | M0/M7 | `tests/ir/m0-unsupported-contract.ll`; execution/target-set analysis is M7 |
 | Inline assembly | UNKNOWN | M0/post-V1 | `tests/ir/m0-unsupported-contract.ll` |
@@ -40,11 +40,11 @@ of these cases into `SAFE`. `EXPERIMENTAL` is not used by M0/M1.
 | Non-default pointer address spaces | UNKNOWN | M0/M4 | Direct instruction/function types, every type nested in reachable/global constant trees, and opaque-pointer `alloca`/GEP semantic types are gated; `tests/ir/m0-registration-and-limits.ll`, `tests/ir/m0-nested-constant-types.ll`, `tests/ir/m0-opaque-pointer-semantic-types.ll` |
 | Non-empty `llvm.global_ctors` | REJECTED | M0 | `tests/ir/m0-global-ctors.ll`; constructors are not scheduled |
 | Registration builtin call shape and constant ASCII names | SUPPORTED | M0 | Static preflight only; `tests/ir/m0-registration-and-limits.ll` |
-| Registration semantics, dominance, aliasing and capture | UNKNOWN | M5 | No registration execution is implemented |
+| Registration semantics, name/overlap checks and return-time capture | SUPPORTED IN M5 | M5 | `FormalExecutor.Lit.M5`, `FormalExecutor.M5.RelationUnit`, `FormalExecutor.M5.OptPlugin`; the plugin executes M5 with `-formal-run-m5` |
 | Configurable module, type, constant and metadata limits | SUPPORTED | M0 | Functions/blocks/instructions, integer width, aggregate/type work, constant traversal/payload/depth, global initializers, metadata nodes/strings/depth, metadata-wrapped Values, `llvm.ident` entries/bytes and canonical textual IR bytes. Type budgets include opaque-pointer `alloca` allocated and instruction/ConstantExpr GEP source element types. Metadata SCCs are condensed before greatest-depth analysis, so legal cycles are accepted while shared DAG depth is preserved; every scheduled edge consumes a cumulative work budget. Covered by `tests/ir/m0-resource-bounds.ll`, `tests/ir/m0-hidden-type-resource-bounds.ll`, `tests/ir/m0-metadata-bounds.ll`, `tests/ir/m0-metadata-shared-depth.ll`, and `tests/ir/m0-metadata-cycles.ll` |
 | No IR mutation / preserved analyses | SUPPORTED | M0 | `tests/ir/m0-preserved.ll` |
 | Run-isolated atomic `result.json` | SUPPORTED | M0 | Each invocation atomically creates `runs/run-<generated-id>/`; no fixed root result is authoritative. JSON binds run ID, canonical IR SHA-256 and exact host identity. Forced writer failure and concurrent same-root runs cannot alias results; `StaleArtifact` and `ConcurrentArtifacts` |
-| Plugin operation exit codes | SUPPORTED | M0 | UNKNOWN `2`, invalid task/configuration `3`, artifact creation/write/internal error `4`; normal `opt` completion `0` means preflight operation success, never formal SAFE; `FormalPass.Plugin.ExitCodes`, `ArtifactIOFailure` |
+| Plugin operation exit codes | SUPPORTED | M0 | UNKNOWN `2`, invalid task/configuration `3`, artifact creation/write/internal error `4`; without `-formal-run-m5`, normal `opt` completion `0` means preflight success only; `FormalPass.Plugin.ExitCodes`, `ArtifactIOFailure` |
 
 ## M1 expression semantics
 
@@ -111,7 +111,7 @@ that ordinary Clang `-O0` output is supported.
 | PHI | SUPPORTED | Incoming value selected by actual predecessor; all PHIs in a block resolve against one pre-entry local snapshot, then commit together |
 | `ret void`, `ret integer` | SUPPORTED | Produces a `Completed` `PathResult` with constraints and termination location |
 | `unreachable` | ERROR | A feasible path reaching it is `REACHED-UNREACHABLE`, distinct from incomplete and internal error |
-| Loops/backedges | UNKNOWN | First repeated basic block on a path terminates that path with `UNKNOWN-M3-LOOP`; M3 performs no unrolling |
+| Loops/backedges | BOUNDED | Natural loops use per-frame dynamic activation counters; each traversed latch-to-header edge counts once; bound exhaustion is `UNKNOWN-LOOP-BOUND` |
 | Solver non-answer | UNKNOWN | TIMEOUT, backend UNKNOWN and worker failure preserve the affected path as incomplete; none is pruned as UNSAT |
 | Aggregate result | SUPPORTED | Internal error dominates; otherwise path error, then incomplete/UNKNOWN, then `M3_EXECUTOR_COMPLETE`. The last status is not program `SAFE` |
 
@@ -122,7 +122,7 @@ that ordinary Clang `-O0` output is supported.
 | Executed | `add`, `sub`, `mul`, `udiv`, `sdiv`, `urem`, `srem`, `and`, `or`, `xor`, `shl`, `lshr`, `ashr`; `icmp eq/ne/ult/ule/ugt/uge/slt/sle/sgt/sge`; `trunc`, `zext`, `sext`, legal integer `bitcast`; `select`, `phi`, unconditional/conditional `br`, `switch`, `ret`, `unreachable` |
 | Scalar operands accepted | `ConstantInt`, pre-bound integer `Argument`, and an already-bound supported instruction result |
 | UNKNOWN: memory/pointers | `alloca`, `load`, `store`, `getelementptr`, pointer/integer casts and other non-integer casts |
-| UNKNOWN: calls/control | `call`, `invoke`, all EH instructions, `indirectbr`, `callbr`, `va_arg`; repeated blocks/backedges |
+| UNKNOWN: calls/control | `invoke`, all EH instructions, `indirectbr`, `callbr`, `va_arg`; unsupported CFG cycles |
 | UNKNOWN: other value families | atomics/fences, floating point, vectors, aggregates, unsupported constants/opcodes/types |
 | UNKNOWN: LLVM special values/flags | `undef`, `poison`, `freeze`, `nsw`, `nuw`, `exact`, other poison-generating annotations, overshift, divide by zero and `sdiv INT_MIN/-1` |
 
@@ -132,7 +132,7 @@ that ordinary Clang `-O0` output is supported.
 |---|---|
 | Unsupported value/IR | `UNKNOWN-UNSUPPORTED-CONSTANT`, `UNKNOWN-UNSUPPORTED-CAST`, `UNKNOWN-UNSUPPORTED-MEMORY-INSTRUCTION`, `UNKNOWN-UNSUPPORTED-CALL`, `UNKNOWN-UNSUPPORTED-EXCEPTION-INSTRUCTION`, `UNKNOWN-UNSUPPORTED-ATOMIC-INSTRUCTION`, `UNKNOWN-UNSUPPORTED-FLOATING-POINT`, `UNKNOWN-UNSUPPORTED-VECTOR`, `UNKNOWN-UNSUPPORTED-AGGREGATE`, `UNKNOWN-UNSUPPORTED-INSTRUCTION`, `UNKNOWN-UNSUPPORTED-TYPE` |
 | Undefined/special semantics | `UNKNOWN-UNDEF`, `UNKNOWN-POISON`, `UNKNOWN-FREEZE`, `UNKNOWN-NSW-NUW`, `UNKNOWN-EXACT`, `UNKNOWN-POISON-ANNOTATION`, `UNKNOWN-DIVIDE-BY-ZERO`, `UNKNOWN-SDIV-OVERFLOW`, `UNKNOWN-OVERSHIFT` |
-| Completeness/resource | `UNKNOWN-M3-LOOP`, `UNKNOWN-INSTRUCTION-LIMIT`, `UNKNOWN-STATE-LIMIT`, `UNKNOWN-SOLVER-TIMEOUT`, `UNKNOWN-SOLVER-UNKNOWN`, `UNKNOWN-SOLVER-FAILURE` |
+| Completeness/resource | `UNKNOWN-LOOP-BOUND`, `UNKNOWN-LOOP-UNSUPPORTED`, `UNKNOWN-WALL-TIME-LIMIT`, `UNKNOWN-INSTRUCTION-LIMIT`, `UNKNOWN-STATE-LIMIT`, `UNKNOWN-SOLVER-QUERY-LIMIT`, `UNKNOWN-SOLVER-TIMEOUT`, `UNKNOWN-SOLVER-UNKNOWN`, `UNKNOWN-SOLVER-FAILURE` |
 | Feasible program error | `REACHED-UNREACHABLE` |
 | Executor invariant failure | `INTERNAL-MISSING-SSA-BINDING`, `INTERNAL-INVALID-PHI-PREDECESSOR`, `INTERNAL-INVALID-SYMBOLIC-BINDING`, `INTERNAL-NO-FEASIBLE-SUCCESSOR`, `INTERNAL-INVALID-EXECUTOR-STATE`, `INTERNAL-SOLVER-ERROR`, `INTERNAL-EXPR-CONSTRUCTION` |
 
@@ -165,12 +165,12 @@ algorithms, status meanings and limitations are in
 
 | Family | Executed | UNKNOWN / error boundary |
 |---|---|---|
-| Global constants | Zero and integer scalar, fixed nested array/struct integer and pointer initializers, null/global pointer and constant GEP pointer initializers; read-only constant global | External global, alias and unsupported aggregate member: UNKNOWN; `externally_initialized` entry bytes stay unknown until overwritten; write to read-only: `READ_ONLY_WRITE` |
+| Global constants | Zero and integer scalar, fixed nested array/struct integer and pointer initializers, null/global pointer and constant GEP pointer initializers; M6 retains `undef` aggregate members as uninitialized bytes; read-only constant global | External global, alias and unsupported aggregate member: UNKNOWN; `externally_initialized` entry bytes stay unknown until overwritten; write to read-only: `READ_ONLY_WRITE` |
 | Stack allocation | Concrete fixed-size `alloca`; fresh dynamic object ID and checked alloc-size multiplication | Symbolic count: `SYMBOLIC_ALLOCATION_SIZE`; scalable or oversized: UNKNOWN |
 | Memory access | Non-atomic/non-volatile integer and pointer `load/store`, DataLayout store size and endian order, checked bounds and alignment | Null/OOB/dead/definite misalignment: error, except `null_pointer_is_valid` address-zero accesses return UNKNOWN while address-zero memory is unmodeled; uninitialized bits, uncertain alignment, non-default address space: UNKNOWN |
 | GEP | First index, nested arrays, constant struct field with StructLayout padding, signed symbolic indices, one-past construction, plain `inbounds` checks including all-zero-index null GEP | Vector GEP, constant `inrange`, unsupported flags, overflow or unproved inbounds: UNKNOWN |
 | Pointer values | Null, guarded object/offset alternatives, pointer `eq/ne` and select, pointer store/load through shadow; null-derived unflagged GEP compares numeric offsets; object instances must match the current state's binding even when numeric IDs collide | Distinct constant globals with a mergeable `unnamed_addr`/`local_unnamed_addr` address, integer loads observing pointer-derived bytes (including partial overwrite and `memcpy`), arbitrary pointer bytes, lost shadow, foreign object instance, `inttoptr` and unrecoverable pointer/int round trip: UNKNOWN |
-| Pointer `llvm.memcpy` | Bounded concrete disjoint nonvolatile copy, preserving fully covered pointer shadows and invalidating partial destination shadows; zero-length no-op after supported argument-attribute checks | Unsupported parameter attributes (`nonnull`, `dereferenceable`, etc.), unproved zero-length alignment, symbolic length/offset, overlap, volatility, memmove and memset: UNKNOWN |
+| Pointer `llvm.memcpy` (M4 baseline) | Bounded concrete disjoint nonvolatile copy, preserving fully covered pointer shadows and invalidating partial destination shadows; zero-length no-op after supported argument-attribute checks | Concrete overlap reports `OVERLAPPING_MEMCPY`; unsupported parameter attributes (`nonnull`, `dereferenceable`, etc.), unproved zero-length alignment, symbolic length/offset and volatility: UNKNOWN. M6 adds `memmove` and `memset` |
 | Resolution | SAT provenance candidates only; candidate range guard retained in constraints | Solver timeout/UNKNOWN and cap exhaustion: UNKNOWN; no adjacent-object conflation |
 
 M4 stable feasible errors are `NULL_DEREFERENCE`, `OUT_OF_BOUNDS`,
@@ -198,26 +198,54 @@ the M4 test corpus, not arbitrary application replay.
 `FormalExecutor.Lit.M4` covers the IR families in
 `tests/ir/m4/`. `FormalMemory.Benchmark` asserts object sharing across 64
 forks and 128 stack objects. The standalone sanitized
-`tests/ir/m4/replay.c` gives native diagnostics for those four classes;
-dead-object access is not yet executable because lifetime intrinsics remain
-UNKNOWN. The two existing future-gate CTests remain skipped for M5/M8.
+`tests/ir/m4/replay.c` gives native diagnostics for those four classes.
+M7 adds dead-object access on return and full-object lifetime intrinsics;
+`FormalExecutor.M7.UseAfterReturnReplay` checks one exported witness against a
+native ASan `stack-use-after-return` report;
+bounded loop execution remains gated for M8.
+
+## M5 registered byte relations
+
+`formal-check` and the plugin's `-formal-run-m5` option execute validated
+`void ()` entries. The test-oriented `FormalScalarExecutor --m5` also accepts
+hand-written IR. See [M5_REGISTRATION.md](M5_REGISTRATION.md) for the API and
+artifact contract.
+
+| Feature | Status | Tests / notes |
+|---|---|---|
+| Scalar, byte-array, stack and global input/output slices | SUPPORTED | `FormalExecutor.Lit.M5`; input slices of non-pointer fields are accepted even when the containing object has concrete pointer fields, while slices overlapping pointer fields return UNKNOWN; fresh symbolic input bytes are installed at registration and outputs are captured before top-frame destruction |
+| In-place registration and disjoint slices | SUPPORTED | Input/output may share a name and object; same-kind overlap and duplicate names, including exact duplicate calls, return UNKNOWN; `FormalExecutor.Lit.M5`, `FormalExecutor.M5.ArtifactClosure` |
+| `__formal_assume` | SUPPORTED FOR i32 ABI | The public C ABI and native replay use `void(i32)`; M5 compares that value with zero and false prunes the path. Other IR widths are UNKNOWN in the executor and invalid at preflight; solver UNKNOWN stays incomplete. `FormalExecutor.Lit.M5`, `FormalExecutor.Unit`, `FormalExecutor.M5.AssumeTruthTable` |
+| Closed SMT relation and versioned JSON | SUPPORTED SUBSET | Internal free symbols and array reads are rejected; normal path disjunction preserves output tuples; partial execution exports an explicit underapproximation and cannot return SAFE; `FormalExecutor.M5.RelationUnit`, `FormalExecutor.M5.ArtifactClosure` |
+| Exhaustive native equivalence | SUPPORTED SUBSET | STP proves both XOR directions for 256 byte inputs and four input domains; the 256 input scalar case and three four-input cases also check SAT and absence of extra outputs at each fixed input, including the complete two-output tuple; `FormalExecutor.M5.TruthTable`, `FormalExecutor.M5.AssumeTruthTable`, `FormalExecutor.M5.TupleTruthTable`, `FormalExecutor.M5.ClangO0TruthTable` |
+| Plugin/formal-check semantic agreement | SUPPORTED | Both call `analyzeM5` and `writeM5Artifacts`; tests compare relation bytes and semantic JSON for Clang `-O0` and branch-specific object bindings; `FormalExecutor.M5.OptPlugin`, `FormalExecutor.M5.ArtifactClosure` |
+| Native model replay | SUPPORTED SUBSET | Registered byte inputs are injected before first read; the bounds-error test runs `formal-check` on Clang IR from the same source compiled into its ASan/UBSan replay executable, and checks both normal capture and an error witness. Arbitrary caller-supplied binaries have no automatic IR/binary identity proof |
+| Builtin `noreturn` attribute | UNKNOWN / INVALID TASK | Executor rejects a call-site or declaration `noreturn` before applying builtin effects; M0 preflight rejects it as invalid registration. `tests/ir/m5/builtin-attributes.ll` |
+| Builtin restricted memory effects | UNKNOWN / INVALID TASK | Registration and assume builtins require unrestricted `memory(readwrite)` effects after combining call-site and declaration attributes. `memory(none)`, `memory(read)`, and other restrictions are rejected before effects; `tests/ir/m5/builtin-memory-effects.ll`, `tests/ir/m5/builtin-memory-declaration.ll` |
+| M5 entry `noreturn` attribute | UNKNOWN / INVALID TASK | Preflight rejects the entry attribute; direct executor use returns UNKNOWN with a false normal relation. A dynamic `ret` from such an entry is LLVM undefined behavior; `tests/ir/m5/entry-noreturn.ll` |
+| Pointer-field inputs, symbolic sizes, path-varying descriptors, dead outputs | UNKNOWN | Explicit diagnostics in `FormalExecutor.Lit.M5`; pointer-byte slices are rejected; full-object `llvm.lifetime.end` makes output capture UNKNOWN |
+| Zero sizes, null registration, out-of-bounds regions, conditional pointer candidates | UNKNOWN | Deterministic rejection in M5/V1; no native UB is silently modeled; `tests/ir/m5/edge-cases.ll` |
+| Heap-region registration and heap lifetime | SUPPORTED SUBSET | M7 allocators produce fresh objects and free ends them; `tests/ir/m5/heap-registration-blocked.ll` enables failure paths and explicitly excludes null with `__formal_assume`. Without failure forks, M5 records a success assumption and an incomplete failure path, so it cannot report unconditional SAFE; `FormalExecutor.M7.HeapEvents` checks all three allocators. Dead regions, symbolic sizes, and unsupported runtimes cannot yield SAFE |
+| Ordinary direct calls and heap operations | SUPPORTED SUBSET / UNKNOWN | Defined C calls, frames, returns, `byval`/`sret`, stack lifetime, aliases, and named heap models are exercised by `FormalExecutor.Lit.M7` (including [`alias-calls.ll`](../tests/ir/m7/alias-calls.ll), calloc overflow, and pointer-shadow copying through realloc/byval), `FormalExecutor.M7.ClangABI` (including a pointer-bearing Clang byval argument and an exact pinned-Clang IR snapshot check), `FormalExecutor.M7.NoundefAggregate`, `FormalExecutor.M7.CrossCallTruthTable`, `FormalExecutor.M7.PluginConsistency`, seven M7 heap replay tests, `FormalExecutor.M7.OverlapMemcpyReplay`, `FormalExecutor.M7.UseAfterReturnReplay`, `FormalExecutor.M7.AbortReplay`, and `FormalExecutor.M7.AssertReplay`; passing native replay tests retain witnesses and native evidence in the build's `m7-evidence/`; unmodeled ABIs remain UNKNOWN |
 
 ## LLVM semantic families outside the M4 executor subset
 
 | Family | Status | Owner | Current boundary |
 |---|---|---:|---|
-| Loads, stores, GEP, globals, stack objects | SUPPORTED SUBSET | M4 | See [M4_MEMORY.md](M4_MEMORY.md); lifetime intrinsics remain UNKNOWN |
-| Aggregates, vectors and memory intrinsics | SUPPORTED SUBSET / UNKNOWN | M4/M6 | M4 handles fixed aggregate global initializers and bounded concrete `llvm.memcpy`; runtime aggregate operations, vectors, memmove and memset remain UNKNOWN |
-| Direct calls, recursion, heap and external models | UNKNOWN | M7 | Preflight only traverses direct defined callees |
-| Loops and path truncation | UNKNOWN | M8 | M3's DFS scheduler rejects repeated blocks; no loop execution or loop-bound scheduling exists |
+| Loads, stores, GEP, globals, stack objects | SUPPORTED SUBSET | M4/M7 | M7 adds full-object stack lifetime start/end and return-time frame cleanup; partial lifetimes remain UNKNOWN. See [M4_MEMORY.md](M4_MEMORY.md) and [M7_CALLS_HEAP.md](M7_CALLS_HEAP.md) |
+| Aggregates and memory intrinsics | SUPPORTED SUBSET / UNKNOWN | M6 | Fixed nested struct/array SSA aggregates, extract/insertvalue, and aggregate load/store discard or write undef padding; bytewise `llvm.memcpy`/`llvm.memmove` and bounded `llvm.memset` are modeled. Overlapping `memcpy` is an error; symbolic lengths/offsets, volatile intrinsics and unmodeled forms return UNKNOWN. See [M6_MEMORY.md](M6_MEMORY.md) |
+| Vectors | UNKNOWN | post-V1 | Vector value and memory semantics are not modeled |
+| Direct calls, recursion, heap and external models | SUPPORTED SUBSET / UNKNOWN | M7 | Separate frames and shared address space; recursion depth bound returns UNKNOWN. x86_64 Linux malloc/calloc/realloc/free and selected C/C++ runtime symbols have explicit models; unknown calls stay UNKNOWN. See [M7_CALLS_HEAP.md](M7_CALLS_HEAP.md) |
+| Loops and path truncation | BOUNDED / CONDITIONAL / UNKNOWN | M8 | Natural loops use per-frame dynamic activations and actual latch-to-header edges. Residual CFG cycles after removing natural backedges, including subcycles inside an outer loop, return `UNKNOWN-IRREDUCIBLE-CYCLE`. The default bound policy records UNKNOWN; explicit error policy produces INVALID_TASK, and explicit assume-exit produces CONDITIONAL. `--require-local-loop-bound` prevents fallback when expected local metadata has vanished. See [M8_LOOPS.md](M8_LOOPS.md) |
 | Floating point | UNKNOWN | post-V1 | No FP Expr nodes exist |
 | TLS, exceptions, RTTI, virtual dispatch, threads | UNKNOWN | post-V1 | Atomics/inline assembly are classified `UNKNOWN` at preflight |
-| Function pointers | UNKNOWN | M7 | Unresolved indirect calls are classified `UNKNOWN` at preflight |
-| SAFE/UNSAFE verdicts and model-injection replay | UNKNOWN | M5+ | M4 reports path completion/memory errors only; it has no formal registration/relation or replay runtime |
+| Function pointers | UNKNOWN | M7 | Indirect calls without a statically resolved direct callee are classified UNKNOWN at preflight/execution |
+| SAFE/UNSAFE verdicts and model-injection replay | SUPPORTED SUBSET | M5 | Registered byte programs produce closed relations and replayable error inputs; unsupported paths remain UNKNOWN |
 
-The remaining future capability-gate CTests are intentionally skipped. They
-document that bounded loop execution and native UNSAFE replay are not yet
-implemented.
+M8's loop tests include exact bound edges, dynamic activations, local metadata,
+irreducible cycles, native differential relation checks, and pass/driver
+agreement. The only transformation accepted as a bound source is metadata
+still present on the analyzed IR.
 
 ## Explicit M0 opcode and intrinsic manifest
 

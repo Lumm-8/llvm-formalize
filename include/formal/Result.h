@@ -35,7 +35,13 @@ enum class IncompletenessReason {
   UnsupportedInstruction,
   UnsupportedType,
   LoopUnsupported,
+  IrreducibleCycle,
+  LoopMetadataLost,
+  LoopBound,
+  WallTimeLimit,
+  SolverQueryLimit,
   InstructionLimit,
+  CallDepthLimit,
   StateLimit,
   SolverTimeout,
   SolverUnknown,
@@ -46,11 +52,20 @@ enum class IncompletenessReason {
   PointerComparisonIncomplete,
   UnsupportedAddressSpace,
   SymbolicAllocationSize,
+  AllocationFailureAssumed,
   ScalableType,
   UnsupportedGlobal,
   InboundsGEP,
   AllocationLimit,
   AlignmentUndetermined,
+  EntryAttributeConflict,
+  RegistrationUnsupported,
+  SymbolicRegistrationSize,
+  RegistrationName,
+  RegistrationOverlap,
+  UseBeforeInput,
+  RegistrationDescriptorMismatch,
+  DeadRegisteredOutput,
 };
 
 enum class PathStatus { Completed, Incomplete, Error, InternalError };
@@ -58,11 +73,18 @@ enum class ExecutionStatus { Complete, Unknown, Error, InternalError };
 enum class PathErrorReason {
   None,
   ReachedUnreachable,
+  NoreturnViolation,
+  AbortCalled,
+  AssertionFailed,
   NullDereference,
   OutOfBounds,
   ReadOnlyWrite,
   DeadObjectAccess,
+  UseAfterFree,
+  InvalidFree,
+  DoubleFree,
   MisalignedAccess,
+  OverlappingMemcpy,
 };
 enum class InternalErrorReason {
   None,
@@ -92,6 +114,39 @@ struct IRLocation {
   unsigned SourceColumn = 0;
 };
 
+struct LoopDiagnostic {
+  std::uint64_t FrameId = 0;
+  std::uint64_t ActivationId = 0;
+  std::string StaticLoopId;
+  std::string Function;
+  std::string Header;
+  std::string BoundSource;
+  std::uint64_t Bound = 0;
+  std::uint64_t TraversedBackedges = 0;
+  std::uint64_t AttemptedBackedge = 0;
+  std::string SuppressedFrom;
+  std::string SuppressedTo;
+  IRLocation BoundLocation;
+};
+
+struct ExecutionEvent {
+  std::string Kind;
+  std::string Model;
+  std::uint64_t FrameId = 0;
+  std::uint64_t ObjectId = 0;
+  std::uint64_t PreviousObjectId = 0;
+  std::uint64_t Size = 0;
+  IRLocation Location;
+  std::string Detail;
+};
+
+struct CallFrameInfo {
+  std::uint64_t FrameId = 0;
+  std::string Function;
+  IRLocation CallSite;
+  IRLocation Continuation;
+};
+
 struct ExecutionStatistics {
   std::uint64_t StatesCreated = 0;
   std::uint64_t CompletedPaths = 0;
@@ -100,6 +155,7 @@ struct ExecutionStatistics {
   std::uint64_t InternalErrorPaths = 0;
   std::uint64_t Forks = 0;
   std::uint64_t PrunedPaths = 0;
+  std::uint64_t AssumptionPrunedPaths = 0;
   std::uint64_t ExecutedInstructions = 0;
   std::uint64_t SolverQueries = 0;
   std::uint64_t MemoryObjects = 0;
@@ -117,6 +173,7 @@ struct ExecutionStatistics {
   std::uint64_t ASTNodes = 0;
   std::uint64_t MaxUpdateListLength = 0;
   std::uint64_t PeakResidentBytes = 0;
+  std::size_t MaximumCallDepthObserved = 0;
 };
 
 struct PathResult {
@@ -132,12 +189,35 @@ struct PathResult {
   PathErrorReason ErrorReason = PathErrorReason::None;
   InternalErrorReason InternalReason = InternalErrorReason::None;
   std::string Detail;
+  bool LoopPolicyError = false;
+  bool UnwindingAssumption = false;
+  std::optional<LoopDiagnostic> Loop;
+  std::vector<LoopDiagnostic> LoopBounds;
+  std::string LimitName;
+  std::optional<std::uint64_t> LimitValue;
+  std::optional<std::uint64_t> ObservedValue;
+  std::vector<CallFrameInfo> CallStack;
+  std::vector<ExecutionEvent> Events;
+  struct RegisteredRegion {
+    bool Input = false;
+    std::string Name;
+    std::uint64_t Size = 0;
+    std::uint64_t ObjectId = 0;
+    std::uint64_t Offset = 0;
+    IRLocation RegistrationLocation;
+    ConstraintSet RegistrationGuards;
+    ExprRef CandidateGuard;
+    std::vector<ExprRef> Bytes;
+  };
+  std::vector<RegisteredRegion> Regions;
 };
 
 struct ExecutionResult {
   ExecutionStatus Status = ExecutionStatus::InternalError;
   std::vector<PathResult> Paths;
   ExecutionStatistics Statistics;
+  bool HasLoopPolicyError = false;
+  bool HasUnwindingAssumption = false;
 };
 
 } // namespace formal

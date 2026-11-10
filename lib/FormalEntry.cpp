@@ -1,4 +1,5 @@
 #include "formal/FormalPass.h"
+#include "formal/ExternalFunctionModel.h"
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/ValueTracking.h"
@@ -14,12 +15,14 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/Support/ModRef.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
 
 #include <algorithm>
 #include <cctype>
 #include <limits>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -259,15 +262,18 @@ bool acceptedOpcode(unsigned Opcode) {
 
 std::optional<formal::PreflightCode>
 unsupportedConstantTree(const llvm::Constant &Root) {
-  std::vector<const llvm::Constant *> Worklist{&Root};
-  std::set<const llvm::Constant *> Visited;
+  // Aggregate undef is represented by M6 as bytes with no known bits. A
+  // scalar undef outside an aggregate still has no supported SSA semantics.
+  std::vector<std::pair<const llvm::Constant *, bool>> Worklist{{&Root, false}};
+  std::set<std::pair<const llvm::Constant *, bool>> Visited;
   while (!Worklist.empty()) {
-    const llvm::Constant *Constant = Worklist.back();
+    const auto [Constant, InsideAggregate] = Worklist.back();
     Worklist.pop_back();
-    if (!Visited.insert(Constant).second)
+    if (!Visited.insert({Constant, InsideAggregate}).second)
       continue;
-    if (llvm::isa<llvm::UndefValue>(Constant) ||
-        llvm::isa<llvm::PoisonValue>(Constant))
+    if (llvm::isa<llvm::PoisonValue>(Constant) ||
+        (llvm::isa<llvm::UndefValue>(Constant) &&
+         !Constant->getType()->isAggregateType() && !InsideAggregate))
       return formal::PreflightCode::UnsupportedValueSemantics;
     if (const auto *Expression = llvm::dyn_cast<llvm::ConstantExpr>(Constant)) {
       const auto *Operation = llvm::cast<llvm::Operator>(Expression);
@@ -285,7 +291,7 @@ unsupportedConstantTree(const llvm::Constant &Root) {
         return Unsupported;
     for (const llvm::Use &Operand : Constant->operands())
       if (const auto *Child = llvm::dyn_cast<llvm::Constant>(Operand.get()))
-        Worklist.push_back(Child);
+        Worklist.emplace_back(Child, Constant->getType()->isAggregateType());
   }
   return std::nullopt;
 }
@@ -594,8 +600,7 @@ validateResourceBounds(llvm::Module &M, formal::PreflightLimits Limits) {
           if (!ScheduleMetadata(Child))
             return failure(formal::PreflightCode::ResourceLimit,
                            "metadata traversal work limit exceeded");
-          else
-            MetadataEdges.emplace_back(Value, Child);
+          MetadataEdges.emplace_back(Value, Child);
         }
       }
       continue;
@@ -822,12 +827,20 @@ bool isRegistrationBuiltin(llvm::StringRef Name) {
          Name == "__formal_register_output" || Name == "__formal_assume";
 }
 
-std::optional<std::string>
-validateRegistrationCall(const llvm::CallBase &Call,
-                         const llvm::Function &Callee,
-                         std::set<std::string> &RegistrationNames) {
+bool isM7ModeledExternal(llvm::StringRef Name) {
+  return formal::findExternalFunctionModel(Name) != nullptr;
+}
+
+std::optional<std::string> validateRegistrationCall(
+    const llvm::CallBase &Call, const llvm::Function &Callee,
+    std::map<std::string, std::vector<const llvm::CallBase *>>
+        &RegistrationNames) {
   if (!isRegistrationBuiltin(Callee.getName()))
     return std::nullopt;
+  if (Call.doesNotReturn() || Callee.doesNotReturn())
+    return "formal registration builtin cannot have the noreturn attribute";
+  if (Call.getMemoryEffects() != llvm::MemoryEffects::unknown())
+    return "formal registration builtin requires unrestricted memory effects";
   llvm::FunctionType *Type = Callee.getFunctionType();
   if (!Type->getReturnType()->isVoidTy() || Type->isVarArg())
     return "formal registration builtin must return void and not be variadic";
@@ -835,7 +848,7 @@ validateRegistrationCall(const llvm::CallBase &Call,
   if (Callee.getName() == "__formal_assume") {
     if (Call.arg_size() != 1 ||
         !Call.getArgOperand(0)->getType()->isIntegerTy(32))
-      return "__formal_assume must have exactly one i32 argument";
+      return "__formal_assume must have the replayable void (i32) ABI";
     return std::string();
   }
 
@@ -855,8 +868,16 @@ validateRegistrationCall(const llvm::CallBase &Call,
   for (unsigned char Character : Name)
     if (Character < 0x20 || Character > 0x7e)
       return "formal registration name must be printable ASCII";
-  if (!RegistrationNames.insert(Name.str()).second)
-    return "formal registration names must be globally unique";
+  std::string QualifiedName =
+      (Callee.getName() == "__formal_register_input" ? "input:" : "output:") +
+      Name.str();
+  auto &PriorCalls = RegistrationNames[QualifiedName];
+  for (const llvm::CallBase *Prior : PriorCalls)
+    if (Prior->getParent() == Call.getParent())
+      return "formal registration names must be unique within each kind";
+  // Distinct basic blocks can be mutually exclusive. The executor checks the
+  // actual per-path sequence and rejects a second use on one path.
+  PriorCalls.push_back(&Call);
   return std::string();
 }
 
@@ -879,6 +900,8 @@ formal::validateEntryFunction(llvm::Module &M, llvm::StringRef EntryName) {
   if (Error == EntryValidationError::None &&
       Entry->getCallingConv() != llvm::CallingConv::C)
     Error = EntryValidationError::InvalidCallingConvention;
+  if (Error == EntryValidationError::None && Entry->doesNotReturn())
+    Error = EntryValidationError::InvalidAttributes;
   return {Entry, Error};
 }
 
@@ -912,6 +935,8 @@ llvm::StringRef formal::preflightCodeName(PreflightCode Code) {
     return "ENTRY_INVALID_LINKAGE";
   case PreflightCode::EntryInvalidCallingConvention:
     return "ENTRY_INVALID_CALLING_CONVENTION";
+  case PreflightCode::EntryInvalidAttributes:
+    return "ENTRY_INVALID_ATTRIBUTES";
   case PreflightCode::DynamicGlobalInitializers:
     return "DYNAMIC_GLOBAL_INITIALIZERS";
   case PreflightCode::ReachableDeclaration:
@@ -1081,6 +1106,10 @@ formal::validateModule(llvm::Module &M, llvm::StringRef EntryName,
       Code = PreflightCode::EntryInvalidCallingConvention;
       Detail = "must use the C calling convention";
       break;
+    case EntryValidationError::InvalidAttributes:
+      Code = PreflightCode::EntryInvalidAttributes;
+      Detail = "must not have the noreturn attribute";
+      break;
     case EntryValidationError::None:
       llvm_unreachable("handled above");
     }
@@ -1114,7 +1143,7 @@ formal::validateModule(llvm::Module &M, llvm::StringRef EntryName,
 
   std::vector<llvm::Function *> Worklist{EntryResult.Entry};
   std::set<llvm::Function *> Visited;
-  std::set<std::string> RegistrationNames;
+  std::map<std::string, std::vector<const llvm::CallBase *>> RegistrationNames;
   while (!Worklist.empty()) {
     llvm::Function *Function = Worklist.back();
     Worklist.pop_back();
@@ -1220,6 +1249,11 @@ formal::validateModule(llvm::Module &M, llvm::StringRef EntryName,
                          EntryResult.Entry);
         continue;
       }
+      // The executor checks the complete signature, attributes, and target
+      // ABI before applying one of these narrowly modeled external effects.
+      if (Callee->isDeclarationForLinker() &&
+          isM7ModeledExternal(Callee->getName()))
+        continue;
       if (Callee->isDeclarationForLinker())
         return failure(PreflightCode::ReachableDeclaration,
                        llvm::Twine("reachable function '") + Callee->getName() +

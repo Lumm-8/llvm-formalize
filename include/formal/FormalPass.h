@@ -21,6 +21,7 @@ enum class EntryValidationError {
   InvalidSignature,
   InvalidLinkage,
   InvalidCallingConvention,
+  InvalidAttributes,
 };
 
 constexpr EntryValidationError
@@ -58,6 +59,7 @@ enum class PreflightCode {
   EntryInvalidSignature,
   EntryInvalidLinkage,
   EntryInvalidCallingConvention,
+  EntryInvalidAttributes,
   DynamicGlobalInitializers,
   ReachableDeclaration,
   ReachableInexactDefinition,

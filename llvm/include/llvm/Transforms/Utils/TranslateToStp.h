@@ -85,9 +85,12 @@ namespace llvm {
       std::string getSymbolName(Value *v, StringRef fallbackPrefix);
       std::string getPointerSourceName(Value *ptr, StringRef fallbackPrefix);
       std::string getGEPSourceName(const GEPOperator *gep);
+      Value *getRegisterStorageKey(Value *ptr, unsigned size,
+                                   Value *fallbackKey) const;
       bool getConstantPointerOffset(Value *ptr, Value *&basePtr,
                                     int64_t &byteOffset) const;
       void recordRegisteredPointerOffset(Value *ptr);
+      void recordRegisteredPointerOffset(Value *ptr, Value *key);
       kleeExpr normalizeRegisteredOffset(Value *memKey, kleeExpr byteOffset);
       Value *selectRegisteredMemoryKey(Value *ptr, Value *basePtr,
                                        kleeExpr &byteOffset);
@@ -162,6 +165,9 @@ namespace llvm {
       std::unordered_map<Value*, std::string> symbolNames;
       std::unordered_map<std::string, unsigned> symbolNameUseCount;
       std::unordered_map<Value*, int64_t> registeredBaseOffsets;
+      std::unordered_map<Value*, std::map<int64_t, Value*>>
+          registeredOffsetKeys;
+      std::vector<klee::ExprHandle> stpExprTemps;
 
       // Pointer analysis: maps loaded pointer SSA values to the alloca
       // they point to.  Filled by stores to pointer allocas and

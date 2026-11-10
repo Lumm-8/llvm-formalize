@@ -252,7 +252,7 @@ entry:
 body:
   br label %body
 }
-; LOOP: reason=UNKNOWN-M3-LOOP
+; LOOP: reason=UNKNOWN-LOOP-BOUND
 
 define i8 @timed(i8 %x) {
 entry:

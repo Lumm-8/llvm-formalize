@@ -62,6 +62,12 @@ int main(int argc, char **argv) {
     memcpy((void *)(uintptr_t)Input, &Value, 1);
     return 0;
   }
+  if (strcmp(argv[1], "memcpy_overlap") == 0) {
+    uint8_t Bytes[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    void *(*volatile NativeMemcpy)(void *, const void *, size_t) = memcpy;
+    NativeMemcpy(Bytes + 1, Bytes, 4);
+    return Bytes[1];
+  }
   if (strcmp(argv[1], "misaligned") == 0) {
     _Alignas(4) uint8_t Bytes[8] = {0};
     volatile uint32_t *Pointer = (uint32_t *)(void *)(Bytes + Input);

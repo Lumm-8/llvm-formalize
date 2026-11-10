@@ -24,12 +24,24 @@ struct ArgumentBinding {
   SymbolicValue Value;
 };
 
+enum class LoopLimitPolicy { Unknown, Error, AssumeExit };
+const char *toString(LoopLimitPolicy Policy) noexcept;
+
 struct ExecutorOptions {
   std::uint64_t MaxInstructionsPerState = 100000;
   std::size_t MaxStates = 10000;
   std::size_t MaxPointerCandidates = 64;
   std::uint64_t MaxObjectBytes = 65536;
+  std::size_t MaxCallDepth = 32;
+  std::uint64_t DefaultLoopBound = 32;
+  bool RequireLocalLoopBound = false;
+  LoopLimitPolicy LoopPolicy = LoopLimitPolicy::Unknown;
+  std::uint64_t MaxWallTimeMs = 0; // Zero disables the run-wide deadline.
+  std::uint64_t MaxSolverQueries = UINT64_MAX;
+  std::uint64_t SolverTimeoutMs = 30000;
   bool EnableMemory = true;
+  bool EnableRegistration = false;
+  bool ModelAllocationFailure = false;
 };
 
 class StateScheduler {

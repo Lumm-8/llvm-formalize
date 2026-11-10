@@ -1,0 +1,3 @@
+; CHECK: br label %for.cond, !llvm.loop ![[LOOP:[0-9]+]]
+; CHECK: ![[LOOP]] = distinct !{![[LOOP]], ![[MUST:[0-9]+]], ![[COUNT:[0-9]+]]}
+; CHECK: ![[COUNT]] = !{!"llvm.loop.unroll.count", i32 3}

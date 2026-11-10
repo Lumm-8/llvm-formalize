@@ -556,7 +556,7 @@ TEST(FormalMemory, EveryReportedM4IRMemoryErrorModelIsNativelyReplayed) {
   };
   // Keep this ledger in lockstep with every M4 lit expectation that reports a
   // memory error. The discovery check below fails when a new one lacks replay.
-  constexpr std::array<ReplayCase, 12> Cases = {{
+  constexpr std::array<ReplayCase, 13> Cases = {{
       {"basic.ll", "null_access", PathErrorReason::NullDereference,
        "null", "null pointer", 0},
       {"basic.ll", "one_past_access", PathErrorReason::OutOfBounds,
@@ -578,6 +578,8 @@ TEST(FormalMemory, EveryReportedM4IRMemoryErrorModelIsNativelyReplayed) {
       {"scalars.ll", "offset_plus_size_overflow",
        PathErrorReason::OutOfBounds, "offset_plus_size_overflow",
        "AddressSanitizer: SEGV", INT64_MAX},
+      {"regressions.ll", "memcpy_overlap", PathErrorReason::OverlappingMemcpy,
+       "memcpy_overlap", "memcpy-param-overlap", 0},
       {"symbolic.ll", "symbolic_index", PathErrorReason::OutOfBounds,
        "symbolic_oob_load", "out of bounds", 0},
       {"symbolic.ll", "nullable_select",
@@ -593,7 +595,7 @@ TEST(FormalMemory, EveryReportedM4IRMemoryErrorModelIsNativelyReplayed) {
   const std::regex Run(
       R"(^; RUN: %scalar-executor %s --m4 --entry ([A-Za-z_][A-Za-z_0-9]*).*--check-prefix=([A-Za-z_0-9-]+).*$)");
   const std::regex ErrorReason(
-      R"(^; ([A-Za-z_0-9-]+): reason=(NULL_DEREFERENCE|OUT_OF_BOUNDS|MISALIGNED_ACCESS|READ_ONLY_WRITE|DEAD_OBJECT_ACCESS).*$)");
+      R"(^; ([A-Za-z_0-9-]+): reason=(NULL_DEREFERENCE|OUT_OF_BOUNDS|MISALIGNED_ACCESS|READ_ONLY_WRITE|DEAD_OBJECT_ACCESS|OVERLAPPING_MEMCPY).*$)");
   const std::regex ErrorStatus(
       R"(^; ([A-Za-z_0-9-]+): M4 status ERROR.*$)");
   std::set<EntryKey> Reported;

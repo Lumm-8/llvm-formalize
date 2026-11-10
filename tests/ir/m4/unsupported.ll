@@ -46,7 +46,7 @@ entry:
   call void @llvm.memset.p0.i64(ptr %slot, i8 0, i64 1, i1 false)
   ret void
 }
-; BULK: reason=UNKNOWN-UNSUPPORTED-MEMORY-INSTRUCTION
+; BULK: M4 status M4_EXECUTOR_COMPLETE
 
 define i8 @ordinary_call() {
 entry:

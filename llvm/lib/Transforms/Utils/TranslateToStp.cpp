@@ -207,6 +207,7 @@ TranslateToStpPass::TranslateToStpPass(TranslateToStpPass&& other) noexcept
     symbolNames(std::move(other.symbolNames)),
     symbolNameUseCount(std::move(other.symbolNameUseCount)),
     registeredBaseOffsets(std::move(other.registeredBaseOffsets)),
+    registeredOffsetKeys(std::move(other.registeredOffsetKeys)),
     pointerTargets(std::move(other.pointerTargets)),
     undeclaredSmtArrays(std::move(other.undeclaredSmtArrays)),
     explicitMemoryMode(other.explicitMemoryMode),
@@ -253,6 +254,7 @@ TranslateToStpPass::operator=(TranslateToStpPass&& other) noexcept {
     symbolNames = std::move(other.symbolNames);
     symbolNameUseCount = std::move(other.symbolNameUseCount);
     registeredBaseOffsets = std::move(other.registeredBaseOffsets);
+    registeredOffsetKeys = std::move(other.registeredOffsetKeys);
     pointerTargets = std::move(other.pointerTargets);
     undeclaredSmtArrays = std::move(other.undeclaredSmtArrays);
     explicitMemoryMode = other.explicitMemoryMode;
@@ -300,6 +302,8 @@ void TranslateToStpPass::resetFunctionState() {
   symbolNames.clear();
   symbolNameUseCount.clear();
   registeredBaseOffsets.clear();
+  registeredOffsetKeys.clear();
+  stpExprTemps.clear();
   pointerTargets.clear();
   undeclaredSmtArrays.clear();
   explicitMemoryMode = false;
@@ -498,14 +502,18 @@ void TranslateToStpPass::getOutputPort() {
               if (auto *bc = dyn_cast<BitCastInst>(riPtr))
                 riOrigin = bc->getOperand(0);
               riOrigin = stripPointerCasts(riOrigin);
+              unsigned riSize = 0;
+              if (auto *sizeCI = dyn_cast<ConstantInt>(ci->getArgOperand(2)))
+                riSize = (unsigned)sizeCI->getZExtValue();
+              Value *riKey = getRegisterStorageKey(riOrigin, riSize, ci);
               std::string iname = getStringFromValue(riName).str();
               if (!iname.empty()) {
                 iname = sanitizeSymbolName(iname);
-                inputNames[riOrigin] = iname;
-                registerSymbolName(riOrigin, iname, true);
-                recordRegisteredPointerOffset(riOrigin);
-                if (auto *sizeCI = dyn_cast<ConstantInt>(ci->getArgOperand(2)))
-                  inputSizes[riOrigin] = (unsigned)sizeCI->getZExtValue();
+                inputNames[riKey] = iname;
+                registerSymbolName(riKey, iname, true);
+                recordRegisteredPointerOffset(riOrigin, riKey);
+                if (riSize)
+                  inputSizes[riKey] = riSize;
               }
             }
           }
@@ -654,6 +662,30 @@ std::string TranslateToStpPass::getPointerSourceName(Value *ptr,
   return getSymbolName(ptr, fallbackPrefix);
 }
 
+Value *TranslateToStpPass::getRegisterStorageKey(Value *ptr, unsigned size,
+                                                 Value *fallbackKey) const {
+  Value *origin = stripPointerCasts(ptr);
+  if (size == 0)
+    return origin;
+
+  auto needsSyntheticKey = [&](Type *ty) {
+    if (!ty || ty->isIntegerTy())
+      return false;
+    uint64_t objectSize = dataLayout->getTypeStoreSize(ty);
+    return objectSize > size;
+  };
+
+  if (auto *ai = dyn_cast<AllocaInst>(origin)) {
+    if (needsSyntheticKey(ai->getAllocatedType()))
+      return fallbackKey ? fallbackKey : origin;
+  } else if (auto *gep = dyn_cast<GEPOperator>(origin)) {
+    if (needsSyntheticKey(gep->getResultElementType()))
+      return origin;
+  }
+
+  return origin;
+}
+
 std::string TranslateToStpPass::getSymbolName(Value *v,
                                               StringRef fallbackPrefix) {
   v = stripPointerCasts(v);
@@ -700,8 +732,14 @@ bool TranslateToStpPass::getConstantPointerOffset(Value *ptr, Value *&basePtr,
               0, true);
     if (!gep->accumulateConstantOffset(*dataLayout, off))
       return false;
-    basePtr = stripPointerCasts(const_cast<Value *>(gep->getPointerOperand()));
-    byteOffset = off.getSExtValue();
+    Value *parentBase = nullptr;
+    int64_t parentOffset = 0;
+    if (!getConstantPointerOffset(
+            const_cast<Value *>(gep->getPointerOperand()), parentBase,
+            parentOffset))
+      return false;
+    basePtr = parentBase;
+    byteOffset = parentOffset + off.getSExtValue();
     return true;
   };
 
@@ -716,12 +754,17 @@ bool TranslateToStpPass::getConstantPointerOffset(Value *ptr, Value *&basePtr,
 }
 
 void TranslateToStpPass::recordRegisteredPointerOffset(Value *ptr) {
+  recordRegisteredPointerOffset(ptr, stripPointerCasts(ptr));
+}
+
+void TranslateToStpPass::recordRegisteredPointerOffset(Value *ptr, Value *key) {
   Value *base = nullptr;
   int64_t off = 0;
   if (!getConstantPointerOffset(ptr, base, off))
     return;
-  ptr = stripPointerCasts(ptr);
-  registeredBaseOffsets[ptr] = off;
+  key = stripPointerCasts(key);
+  registeredBaseOffsets[key] = off;
+  registeredOffsetKeys[stripPointerCasts(base)][off] = key;
 }
 
 kleeExpr TranslateToStpPass::normalizeRegisteredOffset(Value *memKey,
@@ -750,8 +793,29 @@ Value *TranslateToStpPass::selectRegisteredMemoryKey(Value *ptr,
   Value *strippedPtr = stripPointerCasts(ptr);
   if (memoryUpdateLists.count(strippedPtr) &&
       registeredBaseOffsets.count(strippedPtr)) {
-    byteOffset = normalizeRegisteredOffset(strippedPtr, byteOffset);
-    return strippedPtr;
+    bool exactOffset = true;
+    if (byteOffset->getKind() == klee::Expr::Constant) {
+      int64_t off = static_cast<const klee::ConstantExpr *>(
+          byteOffset.get())->getAPValue().getSExtValue();
+      exactOffset = off == registeredBaseOffsets[strippedPtr];
+    }
+    if (exactOffset) {
+      byteOffset = normalizeRegisteredOffset(strippedPtr, byteOffset);
+      return strippedPtr;
+    }
+  }
+  if (byteOffset->getKind() == klee::Expr::Constant) {
+    int64_t off = static_cast<const klee::ConstantExpr *>(
+        byteOffset.get())->getAPValue().getSExtValue();
+    auto baseIt = registeredOffsetKeys.find(stripPointerCasts(basePtr));
+    if (baseIt != registeredOffsetKeys.end()) {
+      auto offIt = baseIt->second.find(off);
+      if (offIt != baseIt->second.end() &&
+          memoryUpdateLists.count(offIt->second)) {
+        byteOffset = normalizeRegisteredOffset(offIt->second, byteOffset);
+        return offIt->second;
+      }
+    }
   }
   if (memoryUpdateLists.count(basePtr)) {
     byteOffset = normalizeRegisteredOffset(basePtr, byteOffset);
@@ -959,8 +1023,48 @@ bool TranslateToStpPass::decomposePointer(Value *ptr, Value *&basePtr,
                                           kleeExpr &byteOffset,
                                           kleeExpr guard, kleeExpr offset) {
   ptr = stripPointerCasts(ptr);
+  static thread_local SmallPtrSet<Value *, 32> ActivePointers;
   basePtr = ptr;
   byteOffset = exprBuilder->Constant(0, klee::Expr::Int32);
+  if (!ActivePointers.insert(ptr).second)
+    return false;
+  struct ActivePointerGuard {
+    SmallPtrSet<Value *, 32> &Set;
+    Value *Ptr;
+    ~ActivePointerGuard() { Set.erase(Ptr); }
+  } activePointerGuard{ActivePointers, ptr};
+
+  auto addOffsets = [&](kleeExpr lhs, kleeExpr rhs) -> kleeExpr {
+    if (lhs->getKind() == klee::Expr::Constant &&
+        rhs->getKind() == klee::Expr::Constant) {
+      uint64_t l = static_cast<const klee::ConstantExpr *>(
+          lhs.get())->getAPValue().getZExtValue();
+      uint64_t r = static_cast<const klee::ConstantExpr *>(
+          rhs.get())->getAPValue().getZExtValue();
+      return exprBuilder->Constant(l + r, klee::Expr::Int32);
+    }
+    return exprBuilder->Add(lhs, rhs);
+  };
+
+  auto resolvePointerTarget = [&]() {
+    Value *resolved = stripPointerCasts(basePtr);
+    Value *target = nullptr;
+    if (auto *gep = dyn_cast<GEPOperator>(resolved))
+      target = const_cast<Value *>(static_cast<const Value *>(gep));
+    else {
+      auto it = pointerTargets.find(resolved);
+      if (it != pointerTargets.end() && it->second != resolved)
+        target = it->second;
+    }
+    if (!target)
+      return;
+
+    Value *targetBase = nullptr;
+    kleeExpr targetOffset;
+    decomposePointer(target, targetBase, targetOffset, guard, offset);
+    basePtr = targetBase;
+    byteOffset = addOffsets(targetOffset, byteOffset);
+  };
 
   if (auto *gepInst = dyn_cast<GetElementPtrInst>(ptr)) {
     basePtr = stripPointerCasts(gepInst->getPointerOperand());
@@ -1004,6 +1108,7 @@ bool TranslateToStpPass::decomposePointer(Value *ptr, Value *&basePtr,
     byteOffset = allConstant
                      ? exprBuilder->Constant(constantOffset, klee::Expr::Int32)
                      : cumOffset;
+    resolvePointerTarget();
     return true;
   }
 
@@ -1018,10 +1123,12 @@ bool TranslateToStpPass::decomposePointer(Value *ptr, Value *&basePtr,
           dataLayout->getIndexedOffsetInType(gep->getSourceElementType(),
                                              indices);
       byteOffset = exprBuilder->Constant(off, klee::Expr::Int32);
+      resolvePointerTarget();
       return true;
     }
   }
 
+  resolvePointerTarget();
   return true;
 }
 
@@ -1133,21 +1240,26 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
         unsigned size = sizeCI ? sizeCI->getZExtValue() : 4;
 
         std::string inputName = getStringFromValue(callInst->getArgOperand(0)).str();
-        if (inputName.empty())
-          inputName = getPointerSourceName(stripPointerCasts(ptr), "input");
-        else
-          inputName = registerSymbolName(stripPointerCasts(ptr), inputName, true);
-
         Value *originPtr = stripPointerCasts(ptr);
+        Value *storageKey = getRegisterStorageKey(originPtr, size, callInst);
+        if (inputName.empty())
+          inputName = getPointerSourceName(storageKey, "input");
+        else
+          inputName = registerSymbolName(storageKey, inputName, true);
+
         bool scalarInput = false;
         if (auto *ai = dyn_cast<AllocaInst>(originPtr)) {
           Type *allocTy = ai->getAllocatedType();
-          scalarInput = allocTy->isIntegerTy() &&
-                        dataLayout->getTypeStoreSize(allocTy) == size;
+          uint64_t allocSize = dataLayout->getTypeStoreSize(allocTy);
+          scalarInput = (allocTy->isIntegerTy() && allocSize == size) ||
+                        (!allocTy->isIntegerTy() && size > 0 &&
+                         allocSize > size);
         } else if (auto *gep = dyn_cast<GEPOperator>(originPtr)) {
           Type *elemTy = gep->getResultElementType();
-          scalarInput = elemTy->isIntegerTy() &&
-                        dataLayout->getTypeStoreSize(elemTy) == size;
+          uint64_t elemSize = dataLayout->getTypeStoreSize(elemTy);
+          scalarInput = (elemTy->isIntegerTy() && elemSize == size) ||
+                        (!elemTy->isIntegerTy() && size > 0 &&
+                         elemSize > size);
         }
 
         unsigned bitWidth = size * 8;
@@ -1162,12 +1274,14 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
                                           nullptr, nullptr, klee::Expr::Int32,
                                           klee::Expr::Int8);
         }
-        memoryArrays[ptr] = array;
-        memoryUpdateLists.insert_or_assign(ptr, std::make_unique<klee::UpdateList>(array, nullptr));
-        recordRegisteredPointerOffset(ptr);
+        memoryArrays[storageKey] = array;
+        memoryUpdateLists.insert_or_assign(storageKey, std::make_unique<klee::UpdateList>(array, nullptr));
+        recordRegisteredPointerOffset(originPtr, storageKey);
 
         // Track the underlying alloca/GEP to redirect later loads/stores
-        if (originPtr != ptr) {
+        if (originPtr != storageKey && scalarInput) {
+          registerSymbolName(storageKey, inputName, true);
+        } else if (originPtr != ptr) {
           Value *origin = originPtr;
           memoryArrays[origin] = array;
           memoryUpdateLists.insert_or_assign(origin, std::make_unique<klee::UpdateList>(array, nullptr));
@@ -1696,24 +1810,35 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
         // Track pointer assignments: when storing an alloca address to
         // a pointer alloca, record the mapping so later *p loads can
         // resolve to the correct target.
-        if (isa<AllocaInst>(val) || isa<GetElementPtrInst>(val) ||
-            isa<Argument>(val) || isa<GlobalVariable>(val)) {
-          pointerTargets[basePtr] = val;
+        if (val->getType()->isPointerTy()) {
+          Value *strippedVal = stripPointerCasts(val);
+          if (pointerTargets.count(strippedVal))
+            pointerTargets[basePtr] = pointerTargets[strippedVal];
+          else if (isa<AllocaInst>(strippedVal) ||
+                   isa<GetElementPtrInst>(strippedVal) ||
+                   isa<Argument>(strippedVal) ||
+                   isa<GlobalVariable>(strippedVal) ||
+                   isa<ConstantExpr>(strippedVal))
+            pointerTargets[basePtr] = strippedVal;
         }
 
-        Value *memKey = selectRegisteredMemoryKey(ptr, basePtr, byteOffset);
-
-        if (memoryUpdateLists.count(memKey)) {
-          kleeExpr valExpr = translateRecursion(val, guard, offset);
+        kleeExpr valExpr = translateRecursion(val, guard, offset);
+        auto writeMemoryValue = [&](Value *writePtr, Value *writeBase,
+                                    kleeExpr writeOffset,
+                                    kleeExpr writeGuard) -> bool {
+          Value *memKey = selectRegisteredMemoryKey(writePtr, writeBase,
+                                                    writeOffset);
+          if (!memoryUpdateLists.count(memKey))
+            return false;
           unsigned arrayRange = memoryUpdateLists.at(memKey)->root->getRange();
 
           if (arrayRange > 8) {
             // Wide array: write at the GEP byte offset so different
             // struct fields (offset 0 vs 4) use separate update slots.
             kleeExpr oldValue = exprBuilder->Read(
-                *memoryUpdateLists.at(memKey), byteOffset);
+                *memoryUpdateLists.at(memKey), writeOffset);
             memoryUpdateLists.at(memKey)->extend(
-                byteOffset, guardedValue(guard, valExpr, oldValue));
+                writeOffset, guardedValue(writeGuard, valExpr, oldValue));
           } else {
             unsigned storeSize = dataLayout->getTypeStoreSize(val->getType());
             if (storeSize == 0) storeSize = (val->getType()->getPrimitiveSizeInBits() + 7) / 8;
@@ -1721,12 +1846,12 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
             // Decompose into byte writes
             for (unsigned i = 0; i < storeSize; i++) {
               kleeExpr byteIndex;
-              if (byteOffset->getKind() == klee::Expr::Constant) {
+              if (writeOffset->getKind() == klee::Expr::Constant) {
                 unsigned off = static_cast<const klee::ConstantExpr *>(
-                    byteOffset.get())->getAPValue().getZExtValue();
+                    writeOffset.get())->getAPValue().getZExtValue();
                 byteIndex = exprBuilder->Constant(off + i, klee::Expr::Int32);
               } else {
-                byteIndex = exprBuilder->Add(byteOffset,
+                byteIndex = exprBuilder->Add(writeOffset,
                     exprBuilder->Constant(i, klee::Expr::Int32));
               }
               kleeExpr byteValue;
@@ -1738,12 +1863,62 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
               kleeExpr oldByte = exprBuilder->Read(
                   *memoryUpdateLists.at(memKey), byteIndex);
               memoryUpdateLists.at(memKey)->extend(
-                  byteIndex, guardedValue(guard, byteValue, oldByte));
+                  byteIndex, guardedValue(writeGuard, byteValue, oldByte));
             }
           }
+          return true;
+        };
+
+        bool wrote = writeMemoryValue(ptr, basePtr, byteOffset, guard);
+        if (!wrote) {
+          auto writePointerPhi = [&](PHINode *ptrPhi, kleeExpr extraOffset) {
+            bool any = false;
+            BasicBlock *phiBB = ptrPhi->getParent();
+            for (unsigned i = 0; i < ptrPhi->getNumIncomingValues(); ++i) {
+              Value *incomingPtr = ptrPhi->getIncomingValue(i);
+              Value *incomingBase = nullptr;
+              kleeExpr incomingOffset;
+              decomposePointer(incomingPtr, incomingBase, incomingOffset,
+                               guard, offset);
+              kleeExpr totalOffset = incomingOffset;
+              if (extraOffset->getKind() == klee::Expr::Constant &&
+                  incomingOffset->getKind() == klee::Expr::Constant) {
+                uint64_t a = static_cast<const klee::ConstantExpr *>(
+                    incomingOffset.get())->getAPValue().getZExtValue();
+                uint64_t b = static_cast<const klee::ConstantExpr *>(
+                    extraOffset.get())->getAPValue().getZExtValue();
+                totalOffset = exprBuilder->Constant(a + b, klee::Expr::Int32);
+              } else {
+                totalOffset = exprBuilder->Add(incomingOffset, extraOffset);
+              }
+              kleeExpr edgeGuard = convertBddToKleeExpr(
+                  bddBR->getEdgeCondition(ptrPhi->getIncomingBlock(i), phiBB));
+              if (edgeGuard->getWidth() != klee::Expr::Bool)
+                edgeGuard = exprBuilder->Ne(
+                    edgeGuard, exprBuilder->Constant(0, edgeGuard->getWidth()));
+              any |= writeMemoryValue(incomingPtr, incomingBase, totalOffset,
+                                      exprBuilder->And(guard, edgeGuard));
+            }
+            return any;
+          };
+
+          kleeExpr extraOffset = exprBuilder->Constant(0, klee::Expr::Int32);
+          if (auto *ptrPhi = dyn_cast<PHINode>(stripPointerCasts(ptr))) {
+            if (ptrPhi->getType()->isPointerTy())
+              wrote = writePointerPhi(ptrPhi, extraOffset);
+          } else if (auto *gep = dyn_cast<GetElementPtrInst>(stripPointerCasts(ptr))) {
+            Value *gepBase = nullptr;
+            decomposePointer(gep, gepBase, extraOffset, guard, offset);
+            if (auto *ptrPhi = dyn_cast<PHINode>(stripPointerCasts(gepBase)))
+              if (ptrPhi->getType()->isPointerTy())
+                wrote = writePointerPhi(ptrPhi, extraOffset);
+          }
+        }
+
+        if (wrote) {
           ret = valExpr;
         } else {
-          errs() << "Warning: Store to unknown pointer\n";
+          errs() << "Warning: Store to unknown pointer: " << *storeInst << "\n";
           ret = exprBuilder->Constant(0, klee::Expr::Int32);
         }
         break;
@@ -1756,6 +1931,14 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
         // (e.g. %p_loaded = load ptr, ptr %p_alloca), look up its
         // target alloca from the pointerTargets map.
         ptr = stripPointerCasts(ptr);
+        if (loadInst->getType()->isPointerTy() && pointerTargets.count(ptr)) {
+          Value *target = stripPointerCasts(pointerTargets[ptr]);
+          pointerTargets[inst] = target;
+          ret = translateRecursion(target, guard, offset);
+          valueToKleeExprCache[v] = ret;
+          --depth;
+          return ret;
+        }
         if (!isa<AllocaInst>(ptr) && !isa<GetElementPtrInst>(ptr) &&
             !isa<GlobalVariable>(ptr) && !isa<ConstantExpr>(ptr)) {
           if (pointerTargets.count(ptr)) {
@@ -2076,11 +2259,12 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
           }
         }
 
-        // For struct field loads via GEP, prefer the registered GEP's own
-        // array and normalize the access to the member-local offset space.
-        Value *memKey = selectRegisteredMemoryKey(ptr, basePtr, byteOffset);
+        auto readMemoryValue = [&](Value *readPtr, Value *readBase,
+                                   kleeExpr readOffset) -> kleeExpr {
+          Value *memKey = selectRegisteredMemoryKey(readPtr, readBase, readOffset);
+          if (!memoryUpdateLists.count(memKey))
+            return nullptr;
 
-        if (memoryUpdateLists.count(memKey)) {
           klee::UpdateList &updates = *memoryUpdateLists.at(memKey);
           unsigned loadBitWidth = loadInst->getType()->getPrimitiveSizeInBits();
           if (loadBitWidth == 0) loadBitWidth = 32;
@@ -2088,32 +2272,31 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
           // If this alloca is currently having its ITE chain built, read
           // directly from the root array to avoid recursive ITE explosion
           // (e.g. a = ashr a, 1 where store value reads the same alloca).
-          if (BuildingITEChains.count(basePtr) ||
+          if (BuildingITEChains.count(readBase) ||
               BuildingITEChains.count(memKey)) {
-            ret = exprBuilder->Read(
+            kleeExpr loaded = exprBuilder->Read(
                 klee::UpdateList(updates.root, nullptr),
                 exprBuilder->Constant(0, klee::Expr::Int32));
-            if (ret->getWidth() != loadBitWidth) {
-              if (ret->getWidth() < loadBitWidth)
-                ret = exprBuilder->ZExt(ret, loadBitWidth);
+            if (loaded->getWidth() != loadBitWidth) {
+              if (loaded->getWidth() < loadBitWidth)
+                loaded = exprBuilder->ZExt(loaded, loadBitWidth);
               else
-                ret = exprBuilder->Extract(ret, 0, loadBitWidth);
+                loaded = exprBuilder->Extract(loaded, 0, loadBitWidth);
             }
-            valueToKleeExprCache[v] = ret;
-            --depth;
-            return ret;
+            return loaded;
           }
 
           // If the array has a wide range (e.g. Int32 from registerInput),
           // do a single read. Otherwise, do byte-by-byte reads.
+          kleeExpr loaded = nullptr;
           unsigned arrayRange = updates.root->getRange();
           if (arrayRange > 8) {
-            ret = exprBuilder->Read(updates, byteOffset);
-            if (ret->getWidth() != loadBitWidth) {
-              if (ret->getWidth() < loadBitWidth)
-                ret = exprBuilder->ZExt(ret, loadBitWidth);
+            loaded = exprBuilder->Read(updates, readOffset);
+            if (loaded->getWidth() != loadBitWidth) {
+              if (loaded->getWidth() < loadBitWidth)
+                loaded = exprBuilder->ZExt(loaded, loadBitWidth);
               else
-                ret = exprBuilder->Extract(ret, 0, loadBitWidth);
+                loaded = exprBuilder->Extract(loaded, 0, loadBitWidth);
             }
           } else {
             unsigned loadSize = dataLayout->getTypeStoreSize(loadInst->getType());
@@ -2122,29 +2305,90 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
             if (loadSize == 0) loadSize = 1;
 
             // Read bytes and concatenate (little-endian: first byte is LSB)
-            ret = nullptr;
+            loaded = nullptr;
             for (unsigned i = 0; i < loadSize; i++) {
               // Compute byte index with constant folding for matching updates
               kleeExpr byteIndex;
-              if (byteOffset->getKind() == klee::Expr::Constant) {
+              if (readOffset->getKind() == klee::Expr::Constant) {
                 unsigned off = static_cast<const klee::ConstantExpr *>(
-                    byteOffset.get())->getAPValue().getZExtValue();
+                    readOffset.get())->getAPValue().getZExtValue();
                 byteIndex = exprBuilder->Constant(off + i, klee::Expr::Int32);
               } else {
-                byteIndex = exprBuilder->Add(byteOffset,
+                byteIndex = exprBuilder->Add(readOffset,
                     exprBuilder->Constant(i, klee::Expr::Int32));
               }
               kleeExpr byteVal = exprBuilder->Read(updates, byteIndex);
               if (i == 0)
-                ret = byteVal;
+                loaded = byteVal;
               else
-                ret = exprBuilder->Concat(ret, byteVal);
+                loaded = exprBuilder->Concat(loaded, byteVal);
             }
           }
-          if (!ret)
-            ret = exprBuilder->Constant(0, loadBitWidth);
+          return loaded ? loaded : exprBuilder->Constant(0, loadBitWidth);
+        };
+
+        auto findPointerPhi = [&](Value *p, kleeExpr &extraOffset) -> PHINode * {
+          p = stripPointerCasts(p);
+          extraOffset = exprBuilder->Constant(0, klee::Expr::Int32);
+          if (auto *phi = dyn_cast<PHINode>(p))
+            if (phi->getType()->isPointerTy())
+              return phi;
+          if (auto *gep = dyn_cast<GetElementPtrInst>(p)) {
+            Value *gepBase = nullptr;
+            decomposePointer(gep, gepBase, extraOffset, guard, offset);
+            if (auto *phi = dyn_cast<PHINode>(stripPointerCasts(gepBase)))
+              if (phi->getType()->isPointerTy())
+                return phi;
+          }
+          return nullptr;
+        };
+
+        kleeExpr phiExtraOffset;
+        if (auto *ptrPhi = findPointerPhi(ptr, phiExtraOffset)) {
+          unsigned loadBitWidth = loadInst->getType()->getPrimitiveSizeInBits();
+          if (loadBitWidth == 0) loadBitWidth = 32;
+          kleeExpr phiResult = exprBuilder->Constant(0, loadBitWidth);
+          BasicBlock *phiBB = ptrPhi->getParent();
+          for (unsigned i = 0; i < ptrPhi->getNumIncomingValues(); ++i) {
+            Value *incomingPtr = ptrPhi->getIncomingValue(i);
+            BasicBlock *incomingBB = ptrPhi->getIncomingBlock(i);
+            Value *incomingBase = nullptr;
+            kleeExpr incomingOffset;
+            decomposePointer(incomingPtr, incomingBase, incomingOffset,
+                             guard, offset);
+            kleeExpr totalOffset = incomingOffset;
+            if (phiExtraOffset->getKind() == klee::Expr::Constant &&
+                incomingOffset->getKind() == klee::Expr::Constant) {
+              uint64_t a = static_cast<const klee::ConstantExpr *>(
+                  incomingOffset.get())->getAPValue().getZExtValue();
+              uint64_t b = static_cast<const klee::ConstantExpr *>(
+                  phiExtraOffset.get())->getAPValue().getZExtValue();
+              totalOffset = exprBuilder->Constant(a + b, klee::Expr::Int32);
+            } else {
+              totalOffset = exprBuilder->Add(incomingOffset, phiExtraOffset);
+            }
+            kleeExpr incomingLoad =
+                readMemoryValue(incomingPtr, incomingBase, totalOffset);
+            if (!incomingLoad)
+              continue;
+            kleeExpr edgeGuard = convertBddToKleeExpr(
+                bddBR->getEdgeCondition(incomingBB, phiBB));
+            if (edgeGuard->getWidth() != klee::Expr::Bool)
+              edgeGuard = exprBuilder->Ne(
+                  edgeGuard, exprBuilder->Constant(0, edgeGuard->getWidth()));
+            phiResult = exprBuilder->Select(edgeGuard, incomingLoad, phiResult);
+          }
+          ret = phiResult;
         } else {
-          errs() << "Warning: Load from unknown pointer\n";
+          // For struct field loads via GEP, prefer the registered GEP's own
+          // array and normalize the access to the member-local offset space.
+          ret = readMemoryValue(ptr, basePtr, byteOffset);
+        }
+
+        if (ret) {
+          // loaded successfully
+        } else {
+          errs() << "Warning: Load from unknown pointer: " << *loadInst << "\n";
           unsigned width = loadInst->getType()->getPrimitiveSizeInBits();
           ret = exprBuilder->Constant(0, width > 0 ? width : 32);
         }
@@ -2214,14 +2458,19 @@ kleeExpr TranslateToStpPass::translateRecursion(Value *v, kleeExpr guard, kleeEx
           BasicBlock *incomingBB = phiInst->getIncomingBlock(i);
           Value *incomingVal = phiInst->getIncomingValue(i);
 
-          bdd incomingCond = bddBR->getEdgeCondition(incomingBB, currentBB);
+          bdd edgeCond = bddBR->getEdgeCondition(incomingBB, currentBB);
+          bdd incomingCond = edgeCond;
           auto predPathIt = bddBR->basicBlockBdd.find(incomingBB);
-          if (predPathIt != bddBR->basicBlockBdd.end())
-            incomingCond = predPathIt->second & incomingCond;
+          if (predPathIt != bddBR->basicBlockBdd.end()) {
+            incomingCond = predPathIt->second;
+            if (edgeCond != bddfalse)
+              incomingCond &= edgeCond;
+          } else if (edgeCond == bddfalse) {
+            incomingCond = bddtrue;
+          }
           kleeExpr condExpr = convertBddToKleeExpr(incomingCond);
 
           kleeExpr incomingExpr = translateRecursion(incomingVal, guard, offset);
-
           if (incomingExpr->getWidth() != width) {
             if (incomingExpr->getWidth() < width)
               incomingExpr = exprBuilder->ZExt(incomingExpr, width);
@@ -2397,7 +2646,338 @@ klee::ExprHandle TranslateToStpPass::convertKleeToStpExpr(kleeExpr e) {
     return ret;
   };
 
-  return stpBuilder->construct(normalize(e));
+  auto toStpSymbolName = [&](std::string name) {
+    name = sanitizeSymbolName(std::move(name));
+    if (name.empty())
+      name = "sym";
+    for (char &c : name) {
+      if (!isalnum(static_cast<unsigned char>(c)) && c != '_')
+        c = '_';
+    }
+    if (isdigit(static_cast<unsigned char>(name.front())))
+      name = "v" + name;
+    return name;
+  };
+
+  auto isLogicalKleeExpr = [](kleeExpr x) {
+    if (!x || x->getWidth() != klee::Expr::Bool)
+      return false;
+    using namespace klee;
+    switch (x->getKind()) {
+    case Expr::Eq:
+    case Expr::Ne:
+    case Expr::Ult:
+    case Expr::Ule:
+    case Expr::Ugt:
+    case Expr::Uge:
+    case Expr::Slt:
+    case Expr::Sle:
+    case Expr::Sgt:
+    case Expr::Sge:
+    case Expr::Not:
+    case Expr::And:
+    case Expr::Or:
+    case Expr::Xor:
+    case Expr::Select:
+      return true;
+    default:
+      return false;
+    }
+  };
+
+  std::unordered_map<const klee::Expr *, klee::ExprHandle> buildCache;
+  std::function<klee::ExprHandle(kleeExpr)> build;
+  std::function<klee::ExprHandle(kleeExpr)> buildImpl = [&](kleeExpr x)
+      -> klee::ExprHandle {
+    using namespace klee;
+    if (!x)
+      return klee::ExprHandle();
+
+    Expr::Kind kind = x->getKind();
+    if (kind == Expr::Constant) {
+      const llvm::APInt &ap =
+          static_cast<const klee::ConstantExpr *>(x.get())->getAPValue();
+      if (x->getWidth() == Expr::Bool)
+        return klee::ExprHandle(ap.isZero() ? vc_falseExpr(vc)
+                                            : vc_trueExpr(vc));
+      if (ap.getBitWidth() <= 64)
+        return klee::ExprHandle(
+            vc_bvConstExprFromLL(vc, ap.getBitWidth(), ap.getZExtValue()));
+      llvm::SmallString<128> bits;
+      for (int i = ap.getBitWidth() - 1; i >= 0; --i)
+        bits.push_back(ap[i] ? '1' : '0');
+      return klee::ExprHandle(vc_bvConstExprFromStr(vc, bits.c_str()));
+    }
+
+    if (kind == Expr::Read) {
+      auto *re = static_cast<const ReadExpr *>(x.get());
+      const Array *root = re->updates.root;
+      if (!root)
+        return klee::ExprHandle();
+
+      klee::ExprHandle readIndex = build(re->index);
+      if (!readIndex)
+        return klee::ExprHandle();
+
+      klee::ExprHandle base;
+      bool scalarRoot = root->getSize() == 1;
+      if (scalarRoot) {
+        bool zeroIndex = false;
+        if (auto *ce = dyn_cast<klee::ConstantExpr>(re->index.get()))
+          zeroIndex = ce->getAPValue().isZero();
+        if (zeroIndex) {
+          std::string name = toStpSymbolName(root->getName());
+          ::VCType type = root->getRange() == Expr::Bool
+                              ? vc_boolType(vc)
+                              : vc_bvType(vc, root->getRange());
+          base = klee::ExprHandle(vc_varExpr(vc, name.c_str(), type));
+          vc_DeleteExpr(type);
+        }
+      }
+
+      if (!base) {
+        ::VCType indexType = vc_bvType(vc, root->getDomain());
+        ::VCType dataType = root->getRange() == Expr::Bool
+                                ? vc_boolType(vc)
+                                : vc_bvType(vc, root->getRange());
+        ::VCType arrayType = vc_arrayType(vc, indexType, dataType);
+        std::string name = toStpSymbolName(root->getName());
+        klee::ExprHandle array(vc_varExpr(vc, name.c_str(), arrayType));
+        vc_DeleteExpr(arrayType);
+        vc_DeleteExpr(dataType);
+        vc_DeleteExpr(indexType);
+        if (!array)
+          return klee::ExprHandle();
+        base = klee::ExprHandle(vc_readExpr(vc, array, readIndex));
+        if (!base)
+          return klee::ExprHandle();
+      }
+
+      std::vector<const UpdateNode *> nodes;
+      for (const UpdateNode *un = re->updates.head.get(); un; un = un->next.get())
+        nodes.push_back(un);
+      std::reverse(nodes.begin(), nodes.end());
+
+      const klee::ConstantExpr *readIndexConst =
+          dyn_cast<klee::ConstantExpr>(re->index.get());
+      klee::ExprHandle result = base;
+      for (const UpdateNode *un : nodes) {
+        if (readIndexConst) {
+          if (auto *updateIndexConst =
+                  dyn_cast<klee::ConstantExpr>(un->index.get())) {
+            if (readIndexConst->getAPValue() != updateIndexConst->getAPValue())
+              continue;
+            klee::ExprHandle updateValue = build(un->value);
+            if (!updateValue)
+              return klee::ExprHandle();
+            result = updateValue;
+            continue;
+          }
+        }
+
+        klee::ExprHandle updateIndex = build(un->index);
+        klee::ExprHandle updateValue = build(un->value);
+        if (!updateIndex || !updateValue)
+          return klee::ExprHandle();
+        klee::ExprHandle sameIndex(vc_eqExpr(vc, readIndex, updateIndex));
+        if (!sameIndex)
+          return klee::ExprHandle();
+        result = klee::ExprHandle(vc_iteExpr(vc, sameIndex, updateValue, result));
+        if (!result)
+          return klee::ExprHandle();
+      }
+
+      return result;
+    }
+
+    if (kind == Expr::Select) {
+      auto *se = static_cast<const SelectExpr *>(x.get());
+      klee::ExprHandle cond = build(se->cond);
+      klee::ExprHandle t = build(se->trueExpr);
+      klee::ExprHandle f = build(se->falseExpr);
+      if (!cond || !t || !f)
+        return klee::ExprHandle();
+      if (x->getWidth() == Expr::Bool) {
+        klee::ExprHandle thenPart(vc_andExpr(vc, cond, t));
+        klee::ExprHandle elseCond(vc_notExpr(vc, cond));
+        klee::ExprHandle elsePart(vc_andExpr(vc, elseCond, f));
+        if (!thenPart || !elseCond || !elsePart)
+          return klee::ExprHandle();
+        return klee::ExprHandle(vc_orExpr(vc, thenPart, elsePart));
+      }
+      return klee::ExprHandle(vc_iteExpr(vc, cond, t, f));
+    }
+
+    if (kind == Expr::Not) {
+      auto *ne = static_cast<const NotExpr *>(x.get());
+      klee::ExprHandle child = build(ne->expr);
+      if (!child)
+        return klee::ExprHandle();
+      return klee::ExprHandle(x->getWidth() == Expr::Bool
+                                  ? vc_notExpr(vc, child)
+                                  : vc_bvNotExpr(vc, child));
+    }
+
+    if (kind == Expr::Concat) {
+      auto *ce = static_cast<const ConcatExpr *>(x.get());
+      klee::ExprHandle left = build(ce->getLeft());
+      klee::ExprHandle right = build(ce->getRight());
+      if (!left || !right)
+        return klee::ExprHandle();
+      return klee::ExprHandle(vc_bvConcatExpr(vc, left, right));
+    }
+
+    if (kind == Expr::Extract) {
+      auto *ee = static_cast<const ExtractExpr *>(x.get());
+      klee::ExprHandle child = build(ee->expr);
+      if (!child)
+        return klee::ExprHandle();
+      return klee::ExprHandle(
+          vc_bvExtract(vc, child, ee->offset + ee->width - 1, ee->offset));
+    }
+
+    if (kind == Expr::ZExt) {
+      auto *ze = static_cast<const ZExtExpr *>(x.get());
+      klee::ExprHandle child = build(ze->src);
+      if (!child)
+        return klee::ExprHandle();
+      unsigned extra = ze->width - ze->src->getWidth();
+      if (extra == 0)
+        return child;
+      klee::ExprHandle zero(vc_bvConstExprFromLL(vc, extra, 0));
+      return klee::ExprHandle(vc_bvConcatExpr(vc, zero, child));
+    }
+
+    if (kind == Expr::SExt) {
+      auto *se = static_cast<const SExtExpr *>(x.get());
+      klee::ExprHandle child = build(se->src);
+      if (!child)
+        return klee::ExprHandle();
+      return klee::ExprHandle(vc_bvSignExtend(vc, child, se->width));
+    }
+
+    if (kind >= Expr::BinaryKindFirst && kind <= Expr::BinaryKindLast) {
+      auto *be = static_cast<const BinaryExpr *>(x.get());
+      klee::ExprHandle left = build(be->left);
+      klee::ExprHandle right = build(be->right);
+      if (!left || !right)
+        return klee::ExprHandle();
+      unsigned width = be->left->getWidth();
+      switch (kind) {
+      case Expr::Add:
+        return klee::ExprHandle(vc_bvPlusExpr(vc, x->getWidth(), left, right));
+      case Expr::Sub:
+        return klee::ExprHandle(vc_bvMinusExpr(vc, x->getWidth(), left, right));
+      case Expr::Mul:
+        return klee::ExprHandle(vc_bvMultExpr(vc, x->getWidth(), left, right));
+      case Expr::UDiv:
+        return klee::ExprHandle(vc_bvDivExpr(vc, x->getWidth(), left, right));
+      case Expr::SDiv:
+        return klee::ExprHandle(vc_sbvDivExpr(vc, x->getWidth(), left, right));
+      case Expr::URem:
+        return klee::ExprHandle(vc_bvModExpr(vc, x->getWidth(), left, right));
+      case Expr::SRem:
+        return klee::ExprHandle(vc_sbvRemExpr(vc, x->getWidth(), left, right));
+      case Expr::And:
+        return klee::ExprHandle(x->getWidth() == Expr::Bool
+                                    ? vc_andExpr(vc, left, right)
+                                    : vc_bvAndExpr(vc, left, right));
+      case Expr::Or:
+        return klee::ExprHandle(x->getWidth() == Expr::Bool
+                                    ? vc_orExpr(vc, left, right)
+                                    : vc_bvOrExpr(vc, left, right));
+      case Expr::Xor:
+        return klee::ExprHandle(x->getWidth() == Expr::Bool
+                                    ? vc_xorExpr(vc, left, right)
+                                    : vc_bvXorExpr(vc, left, right));
+      case Expr::Shl:
+        return klee::ExprHandle(vc_bvLeftShiftExprExpr(vc, width, left, right));
+      case Expr::LShr:
+        return klee::ExprHandle(vc_bvRightShiftExprExpr(vc, width, left, right));
+      case Expr::AShr:
+        return klee::ExprHandle(
+            vc_bvSignedRightShiftExprExpr(vc, width, left, right));
+      case Expr::Eq: {
+        bool boolEq = isLogicalKleeExpr(be->left) ||
+                      isLogicalKleeExpr(be->right);
+        if (!boolEq) {
+          auto forceBVConstant = [&](kleeExpr src,
+                                     klee::ExprHandle current) {
+            if (auto *ce = dyn_cast<klee::ConstantExpr>(src.get())) {
+              const llvm::APInt &ap = ce->getAPValue();
+              return klee::ExprHandle(
+                  vc_bvConstExprFromLL(vc, ap.getBitWidth(),
+                                       ap.getZExtValue()));
+            }
+            return current;
+          };
+          left = forceBVConstant(be->left, left);
+          right = forceBVConstant(be->right, right);
+        }
+        return klee::ExprHandle(boolEq ? vc_iffExpr(vc, left, right)
+                                       : vc_eqExpr(vc, left, right));
+      }
+      case Expr::Ne: {
+        bool boolEq = isLogicalKleeExpr(be->left) ||
+                      isLogicalKleeExpr(be->right);
+        if (!boolEq) {
+          auto forceBVConstant = [&](kleeExpr src,
+                                     klee::ExprHandle current) {
+            if (auto *ce = dyn_cast<klee::ConstantExpr>(src.get())) {
+              const llvm::APInt &ap = ce->getAPValue();
+              return klee::ExprHandle(
+                  vc_bvConstExprFromLL(vc, ap.getBitWidth(),
+                                       ap.getZExtValue()));
+            }
+            return current;
+          };
+          left = forceBVConstant(be->left, left);
+          right = forceBVConstant(be->right, right);
+        }
+        klee::ExprHandle eq(boolEq ? vc_iffExpr(vc, left, right)
+                                   : vc_eqExpr(vc, left, right));
+        return klee::ExprHandle(vc_notExpr(vc, eq));
+      }
+      case Expr::Ult:
+        return klee::ExprHandle(vc_bvLtExpr(vc, left, right));
+      case Expr::Ule:
+        return klee::ExprHandle(vc_bvLeExpr(vc, left, right));
+      case Expr::Ugt:
+        return klee::ExprHandle(vc_bvGtExpr(vc, left, right));
+      case Expr::Uge:
+        return klee::ExprHandle(vc_bvGeExpr(vc, left, right));
+      case Expr::Slt:
+        return klee::ExprHandle(vc_sbvLtExpr(vc, left, right));
+      case Expr::Sle:
+        return klee::ExprHandle(vc_sbvLeExpr(vc, left, right));
+      case Expr::Sgt:
+        return klee::ExprHandle(vc_sbvGtExpr(vc, left, right));
+      case Expr::Sge:
+        return klee::ExprHandle(vc_sbvGeExpr(vc, left, right));
+      default:
+        break;
+      }
+    }
+
+    return stpBuilder->construct(normalize(x));
+  };
+
+  build = [&](kleeExpr x) -> klee::ExprHandle {
+    if (!x)
+      return klee::ExprHandle();
+    auto it = buildCache.find(x.get());
+    if (it != buildCache.end())
+      return it->second;
+    klee::ExprHandle result = buildImpl(x);
+    if (result) {
+      buildCache.emplace(x.get(), result);
+      stpExprTemps.push_back(result);
+    }
+    return result;
+  };
+
+  klee::ExprHandle converted = build(normalize(e));
+  return converted ? converted : stpBuilder->construct(normalize(e));
 }
 
 void TranslateToStpPass::printSMTExpr(kleeExpr e, raw_ostream &os,
@@ -2837,6 +3417,7 @@ void TranslateToStpPass::printSMTExpr(kleeExpr e, raw_ostream &os,
 
 void TranslateToStpPass::translateOutputToStp(const std::string &outFileName) {
   errs() << "Writing SMT-LIB2 to " << outFileName << "...\n";
+  stpExprTemps.clear();
 
   // Build a map of variable name → bit-width for SMT-LIB2 declarations.
   std::unordered_map<std::string, unsigned> varWidths;
@@ -2958,8 +3539,36 @@ void TranslateToStpPass::translateOutputToStp(const std::string &outFileName) {
 
     std::ostringstream ss;
     printer::SMTLIB2_PrintBack(ss, *queryNode, stpObj->bm, false);
-    ss << "(check-sat)\n";
     std::string smt = ss.str();
+
+    // Printing all equalities as one large AND lets STP share and simplify
+    // across independent definitions.  For output formulas containing nested
+    // PHI/select expressions this can rewrite the output equality incorrectly.
+    // Keep STP's declarations/header, but print each equality as its own assert.
+    size_t firstAssert = smt.find("(assert");
+    if (firstAssert != std::string::npos && assertions.size() > 1) {
+      std::string splitSmt = smt.substr(0, firstAssert);
+      for (::VCExpr assertion : assertions) {
+        auto *assertNode = static_cast<stp::ASTNode *>(assertion);
+        if (!assertNode)
+          return false;
+        std::ostringstream one;
+        printer::SMTLIB2_PrintBack(one, *assertNode, stpObj->bm, false);
+        std::string oneSmt = one.str();
+        size_t assertBegin = oneSmt.find("(assert");
+        if (assertBegin == std::string::npos)
+          return false;
+        size_t checkSat = oneSmt.find("(check-sat", assertBegin);
+        if (checkSat == std::string::npos)
+          splitSmt += oneSmt.substr(assertBegin);
+        else
+          splitSmt += oneSmt.substr(assertBegin, checkSat - assertBegin);
+        if (splitSmt.empty() || splitSmt.back() != '\n')
+          splitSmt.push_back('\n');
+      }
+      smt = std::move(splitSmt);
+    }
+    smt += "(check-sat)\n";
 
     std::set<std::string> registeredNames;
     for (auto &kv : inputNames) {
@@ -3032,11 +3641,17 @@ void TranslateToStpPass::translateOutputToStp(const std::string &outFileName) {
           bitWidth = allocTy->getPrimitiveSizeInBits();
       } else if (auto *gep = dyn_cast<GEPOperator>(ptr)) {
         Type *elemTy = gep->getResultElementType();
-        scalarInput = elemTy->isIntegerTy();
         if (inputSizes.count(kv.first))
           bitWidth = inputSizes[kv.first] * 8;
-        else if (scalarInput)
+        uint64_t elemSize = dataLayout->getTypeStoreSize(elemTy);
+        scalarInput = elemTy->isIntegerTy() ||
+                      (inputSizes.count(kv.first) && elemSize > 0 &&
+                       elemSize > inputSizes[kv.first]);
+        if (!inputSizes.count(kv.first) && elemTy->isIntegerTy())
           bitWidth = elemTy->getPrimitiveSizeInBits();
+      } else if (inputSizes.count(kv.first)) {
+        scalarInput = true;
+        bitWidth = inputSizes[kv.first] * 8;
       }
 
       if (!scalarInput || bitWidth == 0 || bitWidth > 64)

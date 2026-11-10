@@ -5,10 +5,14 @@
 ; RUN: rm -rf %t.address-space && %not %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=address_space_entry -formal-output-dir=%t.address-space %s -disable-output 2>&1 | %FileCheck %s --check-prefix=ADDRESS-SPACE
 ; RUN: rm -rf %t.limit && %not %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=registration_entry -formal-max-instructions=1 -formal-output-dir=%t.limit %s -disable-output 2>&1 | %FileCheck %s --check-prefix=LIMIT
 ; RUN: rm -rf %t.alias && %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=alias_entry -formal-output-dir=%t.alias %s -disable-output
+; RUN: rm -rf %t.inout && %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=inout_registration_entry -formal-output-dir=%t.inout %s -disable-output
+; RUN: %FileCheck %s --check-prefix=INOUT-JSON < %t.inout/runs/run-*/result.json
+; RUN: rm -rf %t.branch && %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=branch_registration_entry -formal-output-dir=%t.branch %s -disable-output
 
 ; VALID-JSON: "reason": "VALID"
 ; BAD-NAME: INVALID_TASK [INVALID_REGISTRATION]
 ; DUPLICATE: INVALID_TASK [INVALID_REGISTRATION]
+; INOUT-JSON: "reason": "VALID"
 ; ADDRESS-SPACE: UNKNOWN [UNSUPPORTED_ADDRESS_SPACE]
 ; LIMIT: INVALID_TASK [RESOURCE_LIMIT]
 
@@ -38,6 +42,25 @@ define void @bad_registration_entry() {
 }
 
 define void @duplicate_registration_entry() {
+  call void @__formal_register_input(ptr @storage, i64 1, ptr @input_name)
+  call void @__formal_register_input(ptr @storage, i64 1, ptr @input_name)
+  ret void
+}
+
+define void @branch_registration_entry() {
+entry:
+  %value = load i8, ptr @storage
+  %branch = icmp eq i8 %value, 0
+  br i1 %branch, label %left, label %right
+left:
+  call void @__formal_register_output(ptr @storage, i64 1, ptr @input_name)
+  ret void
+right:
+  call void @__formal_register_output(ptr @storage, i64 1, ptr @input_name)
+  ret void
+}
+
+define void @inout_registration_entry() {
   call void @__formal_register_input(ptr @storage, i64 1, ptr @input_name)
   call void @__formal_register_output(ptr @storage, i64 1, ptr @input_name)
   ret void

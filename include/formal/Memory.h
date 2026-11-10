@@ -18,12 +18,13 @@ public:
   using std::logic_error::logic_error;
 };
 
-enum class AllocationKind { Global, Stack };
+enum class AllocationKind { Global, Stack, Heap, New };
 
 // Object identity and layout are immutable.  Liveness belongs to ObjectState:
 // sibling execution states may end a stack lifetime independently.
 struct MemoryObject final {
   std::uint64_t Id = 0;
+  std::uint64_t OwnerFrameId = 0; // zero for globals and heap allocations
   AllocationKind Kind = AllocationKind::Stack;
   std::uint64_t Size = 0;
   std::uint64_t Alignment = 1;
@@ -75,6 +76,7 @@ public:
   const MemoryObject &object() const noexcept { return *Object; }
   bool live() const noexcept { return Live; }
   void endLifetime() noexcept { Live = false; }
+  void startLifetime(ExprContext &Expressions);
   const UpdateList &bytes() const noexcept { return Bytes; }
   const std::vector<ExprRef> &initialization() const noexcept {
     return Initialized;
@@ -85,11 +87,15 @@ public:
 
   ExprRef initializedAt(ExprRef Offset, ExprContext &Expressions,
                         std::uint8_t RequiredMask = 0xff) const;
+  ExprRef knownMaskAt(ExprRef Offset, ExprContext &Expressions) const;
   ExprRef addressSensitiveAt(ExprRef Offset, ExprContext &Expressions) const;
   ExprRef readByte(ExprRef Offset, ExprContext &Expressions) const;
   void writeByte(ExprRef Offset, ExprRef Byte, ExprContext &Expressions,
                  bool Initializer = false,
                  ExprRef AddressSensitive = nullptr);
+  void writeByteWithMask(ExprRef Offset, ExprRef Byte, ExprRef KnownMask,
+                         ExprContext &Expressions, bool Initializer = false,
+                         ExprRef AddressSensitive = nullptr);
   void setKnownMask(ExprRef Offset, std::uint8_t Mask,
                     ExprContext &Expressions);
   void installShadow(PointerShadowEntry Entry, bool Initializer = false);

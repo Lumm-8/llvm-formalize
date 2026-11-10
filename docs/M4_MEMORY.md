@@ -56,8 +56,9 @@ The shadow is isolated by the same object-level COW rule as the bytes. For a
 bounded, concrete, nonvolatile `llvm.memcpy`, a fully copied pointer shadow is
 relocated with its bytes. A partial copy does not create a shadow, and any
 overlap with an existing destination shadow invalidates it. Subsequent pointer
-loads without an exact shadow are UNKNOWN. Overlapping memcpy, symbolic length
-or offsets, volatile memcpy, memmove and memset remain UNKNOWN.
+loads without an exact shadow are UNKNOWN. Concrete overlapping memcpy reports
+`OVERLAPPING_MEMCPY`; symbolic length or offsets, volatile memcpy, memmove and
+memset remain UNKNOWN in the M4 execution mode.
 Address-sensitive bytes written from an object pointer cannot be reinterpreted
 as a definite integer: an overlapping integer load is UNKNOWN. The marker
 survives partial ordinary writes and `memcpy`; a full ordinary overwrite
@@ -135,7 +136,7 @@ alternatives than `MaxPointerCandidates` returns
 | `load`, `store` | Non-atomic, non-volatile integer and pointer scalars in address space zero; widths i1/i8/i16/i24/i32/i64/i65/i128 tested |
 | `getelementptr` | First index, nested arrays, constant struct field and padding offsets, symbolic array index, plain `inbounds` with checked preconditions |
 | `icmp` / `select` / `phi` | Pointer `eq/ne`, guarded pointer select, and pointer PHI values |
-| `llvm.memcpy` | Bounded concrete length and offsets, nonvolatile, disjoint source/destination ranges; full pointer shadows copied; zero-length no-op only after parameter-attribute checks |
+| `llvm.memcpy` | Bounded concrete length and offsets, nonvolatile, disjoint source/destination ranges; full pointer shadows copied; zero-length no-op only after parameter-attribute checks; concrete overlap reports `OVERLAPPING_MEMCPY` |
 | Globals | External globals, aliases, floating/vector/undef aggregate members and unsupported address spaces are UNKNOWN |
 | Allocation and access | Symbolic alloca count, scalable size, non-default address spaces, vector GEP, arbitrary symbolic pointer bytes, failed pointer provenance, oversized object, and candidate cap are UNKNOWN |
 | Calls and casts | Unsupported memcpy forms, memmove/memset/lifetime intrinsics, heap allocation, ordinary calls, `inttoptr`, and pointer/int reconstruction are UNKNOWN; no M5+ semantics are implied |

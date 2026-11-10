@@ -1,5 +1,6 @@
 #include "formal/Memory.h"
 
+#include <algorithm>
 #include <limits>
 #include <iterator>
 #include <stdexcept>
@@ -45,6 +46,17 @@ ObjectState::ObjectState(std::shared_ptr<const MemoryObject> Object,
     throw MemoryModelException("invalid memory object state");
 }
 
+void ObjectState::startLifetime(ExprContext &Expressions) {
+  Live = true;
+  std::fill(Initialized.begin(), Initialized.end(),
+            Expressions.boolean(false));
+  std::fill(KnownMasks.begin(), KnownMasks.end(),
+            Expressions.constant(8, 0));
+  std::fill(AddressSensitiveBytes.begin(), AddressSensitiveBytes.end(),
+            Expressions.boolean(false));
+  Shadows.clear();
+}
+
 ExprRef ObjectState::initializedAt(ExprRef Offset,
                                     ExprContext &Expressions,
                                     std::uint8_t RequiredMask) const {
@@ -76,6 +88,27 @@ ExprRef ObjectState::initializedAt(ExprRef Offset,
           Expressions.bitAnd(KnownMasks[Position], Mask), Mask);
     }
     Result = Expressions.select(Match, Known, Result);
+  }
+  return Result;
+}
+
+ExprRef ObjectState::knownMaskAt(ExprRef Offset,
+                                 ExprContext &Expressions) const {
+  if (!Offset || Offset->width() != IndexWidth)
+    throw MemoryModelException("known-mask index width mismatch");
+  if (Offset->isConstant()) {
+    const llvm::APInt &Value = Offset->constantValue();
+    if (Value.ugt(std::numeric_limits<std::uint64_t>::max()) ||
+        Value.getZExtValue() >= KnownMasks.size())
+      throw MemoryModelException("known-mask read outside object");
+    return KnownMasks[static_cast<std::size_t>(Value.getZExtValue())];
+  }
+  ExprRef Result = Expressions.constant(8, 0);
+  for (std::size_t Index = KnownMasks.size(); Index != 0; --Index) {
+    const std::size_t Position = Index - 1;
+    Result = Expressions.select(
+        Expressions.eq(Offset, Expressions.constant(IndexWidth, Position)),
+        KnownMasks[Position], Result);
   }
   return Result;
 }
@@ -143,6 +176,31 @@ void ObjectState::writeByte(ExprRef Offset, ExprRef Byte,
     }
   }
   Bytes = Expressions.write(Bytes, std::move(Offset), std::move(Byte));
+}
+
+void ObjectState::writeByteWithMask(ExprRef Offset, ExprRef Byte,
+                                    ExprRef KnownMask,
+                                    ExprContext &Expressions,
+                                    bool Initializer,
+                                    ExprRef AddressSensitive) {
+  if (!KnownMask || !KnownMask->sort().isBitVector() ||
+      KnownMask->width() != 8)
+    throw MemoryModelException("invalid copied known mask");
+  writeByte(Offset, std::move(Byte), Expressions, Initializer,
+            std::move(AddressSensitive));
+  ExprRef FullyKnown = Expressions.eq(KnownMask, Expressions.constant(8, 0xff));
+  if (Offset->isConstant()) {
+    const auto Index = static_cast<std::size_t>(Offset->constantValue().getZExtValue());
+    KnownMasks[Index] = std::move(KnownMask);
+    Initialized[Index] = std::move(FullyKnown);
+  } else {
+    for (std::size_t Index = 0; Index < KnownMasks.size(); ++Index) {
+      ExprRef Match = Expressions.eq(
+          Offset, Expressions.constant(IndexWidth, Index));
+      KnownMasks[Index] = Expressions.select(Match, KnownMask, KnownMasks[Index]);
+      Initialized[Index] = Expressions.select(Match, FullyKnown, Initialized[Index]);
+    }
+  }
 }
 
 void ObjectState::setKnownMask(ExprRef Offset, std::uint8_t Mask,

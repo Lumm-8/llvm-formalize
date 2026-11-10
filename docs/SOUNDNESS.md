@@ -1,4 +1,4 @@
-# M0–M4 Soundness and Trust Boundary
+# M0–M7 Soundness and Trust Boundary
 
 ## Claim boundary
 
@@ -9,10 +9,12 @@ solver-independent expression language. A successful M0 result is
 that the module's instructions have been symbolically executed.
 
 M2 supplies a solver query interface and STP translation boundary. M3 adds a
-single-function scalar path executor. M4 adds an object-memory subset to that
-executor. No call executor, formal input/output registration API, full-program
-verdict, or model-injection replay runtime is part of this scope. See
-[M4_MEMORY.md](M4_MEMORY.md) for the executable memory contract.
+scalar path executor. M4 adds object memory, M5 adds registered byte relations
+and replay, M6 adds aggregate and byte-memory semantics, and M7 adds direct
+calls, frames, ABI checks, stack lifetimes, and named heap/runtime models.
+The verdict applies only to the explicit supported subset. See
+[M4_MEMORY.md](M4_MEMORY.md), [M6_MEMORY.md](M6_MEMORY.md), and
+[M7_CALLS_HEAP.md](M7_CALLS_HEAP.md) for the executable contracts.
 
 ## M0 preflight guarantees
 
@@ -44,8 +46,9 @@ metadata is an input-contract consistency check, not cryptographic provenance;
 an adversarial producer can forge module metadata and is outside this trust
 boundary.
 
-Preflight walks direct reachable callees through pointer casts. Unsupported
-external declarations, unresolved indirect calls, inline assembly,
+Preflight walks direct reachable callees through pointer casts. It admits only
+M7's named external models; any other external declaration, unresolved
+indirect call, inline assembly,
 atomics/fences, fixed/scalable vectors, floating point, exception-handling
 opcodes, freeze/poison/undef and every poison-generating annotation reported by
 LLVM (including disjoint, samesign, nneg and all GEP flags), non-default address
@@ -64,16 +67,22 @@ malformed or invalid verification tasks and cannot become `SAFE`. Dynamic
 global constructors remain invalid under the current initialization contract.
 Debug compile-unit metadata is advisory and produces a warning when absent.
 
-Registration builtins are checked only for ABI shape and constant printable
-ASCII names. This does not prove registration-before-read, alias safety,
-descriptor consistency, lifetime safety, or output capture. Those properties
-belong to M4/M5 and remain `UNKNOWN` until an executor exists.
+M0 checks registration builtins for ABI shape and constant printable ASCII
+names. Its name check rejects duplicates in one basic block; names reused in
+different blocks are checked by M5 execution on each feasible path. M0 alone
+does not establish registration-before-read, alias safety, descriptor
+consistency, lifetime safety, or output capture.
 
-LLVM ABI-affecting attributes such as `byval`, `sret`, `inalloca`,
-`preallocated` and `noalias` are currently checked only for structural validity
-by LLVM's verifier. M0 does not interpret or certify their runtime meaning;
-they remain `UNKNOWN` and belong to the M7 call model. A future executor must
-gate or model them before producing any `SAFE` result.
+M0 checks ABI attributes only for structural validity through LLVM's verifier.
+M7 checks its supported call-site and callee attributes before entering a
+defined direct call. It copies `byval`, validates `sret` range and selected
+`noalias` cases, and returns UNKNOWN for unproved or unsupported contracts such
+as `inalloca` and `preallocated`. M0's `VALIDATED` result alone never certifies
+an ABI promise.
+For `noundef` aggregates, M7 checks every semantic bit's known mask at the
+call and return boundary. Unknown or undefined semantic bits make the path
+incomplete; storage padding is excluded. `FormalExecutor.M7.NoundefAggregate`
+checks JSON verdicts for both violations and legal padding.
 
 Function, basic-block, instruction, constant-node/payload,
 constant-graph-depth, global-initializer-byte, integer-width, aggregate-depth,
@@ -374,8 +383,15 @@ the feasible undefined side is an incomplete path with a precise reason. M3
 does not yet propagate poison, so `nsw`, `nuw`, `exact`, other poison-producing
 annotations, explicit poison/undef and `freeze` stop the affected path as
 UNKNOWN. Reaching `unreachable` on a feasible path is a distinct path error.
-Repeated basic blocks are rejected as `UNKNOWN-M3-LOOP`; M3 neither unrolls a
-loop nor assumes an exit.
+Natural loops are explored up to the configured IR backedge bound per dynamic
+call-frame activation. The count advances only on a traversed latch-to-header
+edge, before the successor enters the header. A disallowed edge is incomplete
+(`UNKNOWN-LOOP-BOUND`), while an irreducible SCC is explicitly
+`UNKNOWN-IRREDUCIBLE-CYCLE`. A consumed local bound hint is
+`UNKNOWN-LOOP-METADATA-LOST`. The default policy never assumes an exit;
+explicit `assume-exit` marks the result conditional and adds no synthetic CFG
+edge. The explicit `error` loop policy makes a bound hit `INVALID_TASK`, even
+if another path reaches a modeled error. See [M8_LOOPS.md](M8_LOOPS.md).
 
 In the M3 acceptance baseline, any memory or pointer operation, call, EH, atomic, floating-point, vector,
 aggregate, unsupported constant/type/opcode, or pointer/integer cast terminates
@@ -383,7 +399,8 @@ the affected path with its stable UNKNOWN reason. Consequently that M3 subset is
 only for hand-written or otherwise verified scalar IR. It does not support
 ordinary Clang `-O0` functions containing stack memory, and it makes no claim
 about globals, heap objects, pointer provenance, structures, registration,
-calls, or loop bounds.
+calls, or a registered relation. M8 adds the explicit scalar loop bound
+contract above without changing the M3-local completion status into SAFE.
 
 `M3_EXECUTOR_COMPLETE` means every feasible scalar path in this restricted
 executor returned normally. It is not `SAFE`, because there is no registered
@@ -443,8 +460,21 @@ Every reported executable memory-error `PathResult` retains a validated SAT
 model. If the witness query times out or returns UNKNOWN, the path is
 incomplete; a missing/invalid model or inconsistent UNSAT is INTERNAL_ERROR,
 never an unmodeled `Error`. M4 tests derive native ASan/UBSan replay inputs
-from models for null, bounds, alignment and read-only-write errors. Dead-object
-access has no executable lifetime transition yet in the supported subset.
+from models for null, bounds, alignment and read-only-write errors. M7 adds
+return-time stack invalidation; `FormalExecutor.M7.UseAfterReturnReplay`
+checks a concrete `DEAD_OBJECT_ACCESS` witness against native ASan
+stack-use-after-return. `FormalExecutor.M7.OverlapMemcpyReplay`,
+`FormalExecutor.M7.DoubleDeleteReplay`, and `FormalExecutor.M7.FreeNewReplay`
+check the corresponding exported witnesses against native ASan diagnostics.
+`FormalExecutor.M7.AbortReplay` and `FormalExecutor.M7.AssertReplay` compile
+the same source to pinned-Clang IR and a native sanitizer executable, verify
+the exported error witness, then require native `SIGABRT`. The assertion
+replay also checks its diagnostic text; explicit termination is not an ASan
+memory-error report. Exact defined function aliases and alias chains use the
+same call-frame validation as ordinary direct calls, exercised by
+[`alias-calls.ll`](../tests/ir/m7/alias-calls.ll).
+These are evidence for the tested paths, not a claim that every M7 error has
+native replay coverage.
 `FormalMemory.EveryReportedM4IRMemoryErrorModelIsNativelyReplayed` now
 discovers every M4 lit entry whose expectation reports a memory-error reason.
 Its explicit replay ledger must match that set exactly; for every error path
@@ -472,13 +502,61 @@ alignment than the object's guarantee is UNKNOWN rather than spuriously
 reported aligned or misaligned. Zero-sized objects have unique logical bases
 but no nonzero legal access. An unflagged GEP from null retains its numeric
 offset for pointer equality; a nonzero null-derived address has no recoverable
-object provenance for dereference and is UNKNOWN. Global aliases and
-unsupported aggregate members, calls, heap, unsupported bulk memory
-intrinsics, formal input/output
-registration, loop unrolling and arbitrary C++ objects remain unsupported.
+object provenance for dereference and is UNKNOWN. Global-variable aliases,
+unsupported aggregate members, and loop unrolling remain outside the M4 memory
+layer. M7 resolves exact function aliases to defined callees; M6/M7 add the
+explicitly listed aggregate, call, and heap subset.
+Formal input/output registration is available only in M5 mode.
 
 The test-oriented scalar driver requires `--m4` for memory execution and then
 prints `M4_EXECUTOR_COMPLETE` for the library's `ExecutionStatus::Complete`.
 The default driver mode preserves the M3 `M3_EXECUTOR_COMPLETE` label. M4
 completion means only that all supported paths completed; it
 cannot be promoted to `SAFE` without the M5 registration and relation model.
+
+## M5 registered relation ledger
+
+M5 executes the three formal builtins on the M4 object memory. Input
+registration resolves a live object slice and replaces only its current bytes
+with stable `input.<name>.<index>` symbols. Earlier reads remain earlier reads;
+the path-local read ledger rejects a later input registration over bytes already
+read. Forks preserve M4 copy-on-write memory. Output descriptors are captured
+at top-level `ret` before stack objects end. The relation uses separate
+`output.<name>.<index>` symbols and one conjunction per complete normal path:
+that path's constraints and all output byte equalities. The disjunction keeps
+multi-output correlation. Errors are excluded from the normal relation and
+require a solver-validated, closed input model before `UNSAFE` is emitted.
+
+| Claim | Gate | Limit |
+|---|---|---|
+| Registered scalar/array/global/stack bytes equal executed final bytes | `FormalExecutor.Lit.M5`, native truth-table tests | Concrete live slices only; M7 adds modeled heap slices under the same registration checks |
+| `assume` removes only infeasible inputs | `FormalExecutor.M5.AssumeTruthTable`, `FormalExecutor.Unit`, `tests/ir/m5/edge-cases.ll` | Only the replayable `void(i32)` ABI is supported; other IR widths are UNKNOWN, and solver UNKNOWN/timeout leaves an incomplete path |
+| A builtin marked `noreturn` cannot add a normal return | `tests/ir/m5/builtin-attributes.ll` | Call-site and declaration attributes are rejected before builtin effects; preflight reports invalid registration |
+| A memory-effect annotation cannot hide input symbolization | `tests/ir/m5/builtin-memory-effects.ll`, `tests/ir/m5/builtin-memory-declaration.ll` | Builtins require unrestricted effective memory effects. The optimized witness keeps the pre-registration value 7 when a call is marked `memory(none)`; M5 rejects that IR instead of introducing a free input byte |
+| A `noreturn` entry cannot produce a normal relation | `tests/ir/m5/entry-noreturn.ll` | Preflight rejects the entry and direct execution reports UNKNOWN before any normal path; an actual return violates the LLVM attribute |
+| Heap registration cannot ignore allocation failure | `tests/ir/m5/heap-registration-blocked.ll`, `FormalExecutor.M7.HeapEvents`, `FormalExecutor.Lit.M7` | With `--allocation-failures`, the success path registers a live heap byte and `__formal_assume` excludes null. Without failure forks, M5 records the success assumption and a separate `UNKNOWN-ALLOCATION-FAILURE-ASSUMED` path, preventing unconditional SAFE. `UNSAFE` error witnesses retain precedence |
+| Heap and byval pointer copies preserve provenance | `tests/ir/m7/heap-options.ll`, `tests/ir/m7/direct.ll`, `FormalExecutor.M7.ClangABI` | Realloc growth/shrink and byval copy retain complete pointer shadows; the copied pointer writes the original target while a callee's byval field mutation remains private. Concrete calloc multiplication overflow returns UNKNOWN |
+| Direct calls preserve the registered relation across frames | `FormalExecutor.M7.CrossCallTruthTable`, `FormalExecutor.M7.PluginConsistency` | Pinned Clang C calls mutate the caller's output byte; STP checks both relation directions and all four allowed inputs, then the opt plugin and formal-check artifacts are compared |
+| Relation has no free internal scalar or root-array read | `FormalExecutor.M5.RelationUnit`, `FormalExecutor.M5.ArtifactClosure` | Such paths make export UNKNOWN; no existential projection is attempted |
+| Relation is sound and precise on enumerated byte domains | `FormalExecutor.M5.TruthTable`, `FormalExecutor.M5.AssumeTruthTable`, `FormalExecutor.M5.TupleTruthTable`, `FormalExecutor.M5.ClangO0TruthTable` | Exhaustive checks cover the specified small programs, not arbitrary programs |
+| Native replay uses injected bytes before reads | `FormalExecutor.M5.ReplayRuntime`, `FormalExecutor.M5.ErrorNativeReplay` | The error replay uses `formal-check` on Clang IR from the same source as its sanitizer binary and checks normal capture plus an error witness; arbitrary external binaries still need an IR/binary provenance check |
+| Any incomplete path prevents SAFE | `FormalExecutor.M5.RelationUnit`, `FormalExecutor.M5.ArtifactClosure` | Completed paths form an `UNDER_APPROXIMATION`; absence of normal paths gives false |
+| Both M5 frontends agree on semantics | `FormalExecutor.M5.OptPlugin`, `FormalExecutor.M5.ArtifactClosure` | Run IDs, host-tool provenance, and preflight metadata are frontend-specific |
+
+The exporter traverses the Formal expression AST. It rejects unregistered
+scalar symbols and array reads before printing SMT; unused registered inputs
+still receive declarations. The artifact checker independently verifies quoted
+SMT identifiers have declarations or definitions and asks STP to reparse each
+relation. This closes the relation for the supported subset, not a proof that
+unsupported LLVM semantics are representable. An incomplete path yields
+`UNKNOWN` unless a validated error witness exists; `UNSAFE` has priority over
+`UNKNOWN`. An internal executor or artifact failure yields `INTERNAL_ERROR`.
+
+M5/V1 rejects zero-length registration, exact duplicate registration, all
+same-kind overlap, symbolic sizes, conditional or multiple pointer candidates,
+arbitrary pointer-field input bytes, and dead output capture with explicit
+UNKNOWN reasons. Input/output overlap is allowed and recorded as an alias.
+Name uniqueness is per kind, so an in-place input/output pair may share a
+name. M7 adds Heap and C++ New object kinds; registration still requires a live
+resolved object slice. See [M5_REGISTRATION.md](M5_REGISTRATION.md) for the
+exact JSON and SMT contract.
