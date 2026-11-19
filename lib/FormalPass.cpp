@@ -281,7 +281,7 @@ public:
         std::exit(4);
       if (Analysis.Verdict == "INVALID_TASK")
         std::exit(3);
-      if (Analysis.Verdict == "UNSAFE")
+      if (Analysis.Verdict == "UNSAFE" || Analysis.Verdict == "UNSAFE-UB")
         std::exit(1);
       if (Analysis.Verdict == "UNKNOWN" ||
           Analysis.Verdict == "CONDITIONAL")

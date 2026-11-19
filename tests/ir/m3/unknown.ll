@@ -1,5 +1,6 @@
 ; RUN: %scalar-executor %s --entry div_zero | %FileCheck %s --check-prefix=DIVZERO
 ; RUN: %scalar-executor %s --entry sdiv_overflow | %FileCheck %s --check-prefix=SDIV
+; RUN: %scalar-executor %s --entry srem_overflow | %FileCheck %s --check-prefix=SREM
 ; RUN: %scalar-executor %s --entry overshift | %FileCheck %s --check-prefix=SHIFT
 ; RUN: %scalar-executor %s --entry symbolic_div | %FileCheck %s --check-prefix=SYMDIV
 ; RUN: %scalar-executor %s --entry symbolic_sdiv | %FileCheck %s --check-prefix=SYMSDIV
@@ -33,43 +34,51 @@ entry:
   %r = udiv i8 1, 0
   ret i8 %r
 }
-; DIVZERO: M3 status UNKNOWN
-; DIVZERO: reason=UNKNOWN-DIVIDE-BY-ZERO
+; DIVZERO: M3 status ERROR
+; DIVZERO: reason=LLVM-UB-DIVIDE-BY-ZERO
 
 define i8 @sdiv_overflow() {
 entry:
   %r = sdiv i8 -128, -1
   ret i8 %r
 }
-; SDIV: M3 status UNKNOWN
-; SDIV: reason=UNKNOWN-SDIV-OVERFLOW
+; SDIV: M3 status ERROR
+; SDIV: reason=LLVM-UB-SDIV-OVERFLOW
+
+define i8 @srem_overflow() {
+entry:
+  %r = srem i8 -128, -1
+  ret i8 %r
+}
+; SREM: M3 status ERROR
+; SREM: reason=LLVM-UB-SREM-OVERFLOW
 
 define i8 @overshift() {
 entry:
   %r = shl i8 1, 8
   ret i8 %r
 }
-; SHIFT: reason=UNKNOWN-OVERSHIFT
+; SHIFT: return=poison
 
 define i8 @symbolic_div(i8 %x, i8 %y) {
 entry:
   %r = udiv i8 %x, %y
   ret i8 %r
 }
-; SYMDIV: M3 status UNKNOWN
+; SYMDIV: M3 status ERROR
 ; SYMDIV: M3 paths 2
 ; SYMDIV-DAG: status=COMPLETED
-; SYMDIV-DAG: reason=UNKNOWN-DIVIDE-BY-ZERO
+; SYMDIV-DAG: reason=LLVM-UB-DIVIDE-BY-ZERO
 
 define i8 @symbolic_sdiv(i8 %x, i8 %y) {
 entry:
   %r = sdiv i8 %x, %y
   ret i8 %r
 }
-; SYMSDIV: M3 status UNKNOWN
+; SYMSDIV: M3 status ERROR
 ; SYMSDIV: M3 paths 3
-; SYMSDIV-DAG: reason=UNKNOWN-DIVIDE-BY-ZERO
-; SYMSDIV-DAG: reason=UNKNOWN-SDIV-OVERFLOW
+; SYMSDIV-DAG: reason=LLVM-UB-DIVIDE-BY-ZERO
+; SYMSDIV-DAG: reason=LLVM-UB-SDIV-OVERFLOW
 ; SYMSDIV-DAG: status=COMPLETED
 
 define i8 @symbolic_shift(i8 %x, i8 %amount) {
@@ -77,31 +86,30 @@ entry:
   %r = lshr i8 %x, %amount
   ret i8 %r
 }
-; SYMSHIFT: M3 status UNKNOWN
-; SYMSHIFT: M3 paths 2
-; SYMSHIFT-DAG: status=COMPLETED
-; SYMSHIFT-DAG: reason=UNKNOWN-OVERSHIFT
+; SYMSHIFT: M3 status M3_EXECUTOR_COMPLETE
+; SYMSHIFT: M3 paths 1
+; SYMSHIFT: return=bv8:conditional-poison
 
 define i8 @flagged(i8 %x) {
 entry:
   %r = add nsw i8 %x, 1
   ret i8 %r
 }
-; FLAG: reason=UNKNOWN-NSW-NUW
+; FLAG: return=bv8:conditional-poison
 
 define i8 @flagged_nuw(i8 %x) {
 entry:
   %r = add nuw i8 %x, 1
   ret i8 %r
 }
-; NUW: reason=UNKNOWN-NSW-NUW
+; NUW: return=bv8:conditional-poison
 
 define i8 @exact(i8 %x) {
 entry:
   %r = udiv exact i8 %x, 2
   ret i8 %r
 }
-; EXACT: reason=UNKNOWN-EXACT
+; EXACT: return=bv8:conditional-poison
 
 define i8 @poison_annotation(i8 %x) {
 entry:
@@ -115,13 +123,15 @@ entry:
   %r = freeze i8 %x
   ret i8 %r
 }
-; FREEZE: reason=UNKNOWN-FREEZE
+; FREEZE: M3 status M3_EXECUTOR_COMPLETE
+; FREEZE: reason=NORMAL-RETURN
 
 define i8 @poison_value() {
 entry:
   ret i8 poison
 }
-; POISON: reason=UNKNOWN-POISON
+; POISON: reason=NORMAL-RETURN
+; POISON: return=poison
 
 define i8 @undef_value() {
 entry:

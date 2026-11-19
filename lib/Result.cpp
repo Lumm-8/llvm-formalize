@@ -146,6 +146,14 @@ const char *toReasonCode(PathErrorReason Reason) noexcept {
   switch (Reason) {
   case PathErrorReason::None:
     return "NONE";
+  case PathErrorReason::DivisionByZero:
+    return "LLVM-UB-DIVIDE-BY-ZERO";
+  case PathErrorReason::SignedDivisionOverflow:
+    return "LLVM-UB-SDIV-OVERFLOW";
+  case PathErrorReason::SignedRemainderOverflow:
+    return "LLVM-UB-SREM-OVERFLOW";
+  case PathErrorReason::PoisonConsumed:
+    return "LLVM-UB-POISON-CONSUMED";
   case PathErrorReason::ReachedUnreachable:
     return "REACHED-UNREACHABLE";
   case PathErrorReason::NoreturnViolation:

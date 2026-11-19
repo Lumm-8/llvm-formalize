@@ -23,11 +23,17 @@ struct AggregateValue final {
 
 class SymbolicValue final {
 public:
-  explicit SymbolicValue(ExprRef BitVector) : Data(std::move(BitVector)) {
+  explicit SymbolicValue(ExprRef BitVector, ExprRef Poison = nullptr)
+      : Data(std::move(BitVector)), PoisonCondition(std::move(Poison)) {
     const ExprRef &Value = std::get<ExprRef>(Data);
     if (!Value || !Value->sort().isBitVector())
       throw std::invalid_argument(
           "SymbolicValue requires a bitvector expression");
+    if (PoisonCondition && !PoisonCondition->sort().isBool())
+      throw std::invalid_argument("poison condition must be Boolean");
+    if (PoisonCondition && PoisonCondition->isConstant() &&
+        PoisonCondition->constantValue().isZero())
+      PoisonCondition.reset();
   }
   explicit SymbolicValue(PointerValue Pointer) : Data(std::move(Pointer)) {
     if (!std::get<PointerValue>(Data).Width ||
@@ -49,6 +55,7 @@ public:
     return std::holds_alternative<AggregateValue>(Data);
   }
   const ExprRef &bitVector() const { return std::get<ExprRef>(Data); }
+  const ExprRef &poisonCondition() const noexcept { return PoisonCondition; }
   const PointerValue &pointer() const { return std::get<PointerValue>(Data); }
   const AggregateValue &aggregate() const {
     return std::get<AggregateValue>(Data);
@@ -59,6 +66,7 @@ public:
 
 private:
   std::variant<ExprRef, PointerValue, AggregateValue> Data;
+  ExprRef PoisonCondition;
 };
 
 } // namespace formal

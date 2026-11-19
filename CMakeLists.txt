@@ -420,7 +420,35 @@ if(FORMAL_BUILD_TESTS)
     set_tests_properties(FormalExecutor.Lit.M8 PROPERTIES
       LABELS "lit;ir;m8;loop")
     formal_set_sanitizer_test_environment(FormalExecutor.Lit.M8)
+    add_test(NAME FormalExecutor.Lit.M9
+      COMMAND ${FORMAL_LLVM_LIT_EXECUTABLE} -sv --filter=m9/
+        ${CMAKE_CURRENT_BINARY_DIR}/tests)
+    set_tests_properties(FormalExecutor.Lit.M9 PROPERTIES
+      LABELS "lit;ir;m9;llvm-semantics")
+    formal_set_sanitizer_test_environment(FormalExecutor.Lit.M9)
     find_program(FORMAL_PYTHON3_EXECUTABLE NAMES python3 REQUIRED)
+    find_program(FORMAL_STP_TEST_EXECUTABLE NAMES stp)
+    set(FORMAL_M9_STP_ARGS)
+    if(FORMAL_STP_TEST_EXECUTABLE)
+      set(FORMAL_M9_STP_ARGS --stp ${FORMAL_STP_TEST_EXECUTABLE})
+    endif()
+    add_test(NAME FormalExecutor.M9.Driver
+      COMMAND ${FORMAL_PYTHON3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_m9_driver.py
+        --formal-check $<TARGET_FILE:formal-check>
+        --ir ${CMAKE_CURRENT_SOURCE_DIR}/tests/ir/m9/langref.ll
+        ${FORMAL_M9_STP_ARGS})
+    set_tests_properties(FormalExecutor.M9.Driver PROPERTIES
+      LABELS "m9;driver;preflight;ub")
+    formal_set_sanitizer_test_environment(FormalExecutor.M9.Driver)
+    formal_set_stp_test_environment(FormalExecutor.M9.Driver)
+    add_test(NAME FormalExecutor.M9.SmallWidthFlags
+      COMMAND ${FORMAL_PYTHON3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_m9_flags.py
+        --scalar-executor $<TARGET_FILE:FormalScalarExecutor>)
+    set_tests_properties(FormalExecutor.M9.SmallWidthFlags PROPERTIES
+      LABELS "m9;flags;exhaustive;ub")
+    formal_set_sanitizer_test_environment(FormalExecutor.M9.SmallWidthFlags)
     add_test(NAME FormalExecutor.M7.HeapEvents
       COMMAND ${FORMAL_PYTHON3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_m7_heap_events.py

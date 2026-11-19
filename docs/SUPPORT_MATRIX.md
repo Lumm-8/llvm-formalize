@@ -35,7 +35,7 @@ of these cases into `SAFE`. `EXPERIMENTAL` is not used by M0/M1.
 | Fixed vectors | UNKNOWN | M0/M6 | Explicit preflight gate includes types nested in constant trees plus opaque-pointer `alloca` allocated and GEP source element types; `tests/ir/m0-semantic-manifest.ll`, `tests/ir/m0-nested-constant-types.ll`, `tests/ir/m0-opaque-pointer-semantic-types.ll` |
 | Floating-point types and opcodes | UNKNOWN | M0/post-V1 | Explicit preflight gate includes every node in global/reachable constant trees plus opaque-pointer `alloca` allocated and GEP source element types; `tests/ir/m0-semantic-manifest.ll`, `tests/ir/m0-constant-fp-type.ll`, `tests/ir/m0-opaque-pointer-semantic-types.ll` |
 | EH opcodes (`invoke`, pads, returns, `landingpad`, `resume`) | UNKNOWN | M0/post-V1 | Explicit preflight gate in `tests/ir/m0-semantic-manifest.ll` |
-| `freeze`, poison/undef operands and poison-generating annotations | UNKNOWN | M0/M9 | Uses LLVM's common poison-annotation query for `nsw`/`nuw`/`exact`, `or disjoint`, `icmp samesign`, `zext nneg`, every GEP nowrap/inbounds/inrange flag, return attributes and poison metadata; nested `ConstantExpr` trees and global initializers are included |
+| `freeze`, poison/undef operands and poison-generating annotations | SUPPORTED SUBSET / UNKNOWN | M0/M9 | Freeze of a proved defined value is identity; direct scalar undef/poison operands and conditional scalar poison through i8 use exact finite choices. Wider freeze remains UNKNOWN. Uses LLVM's common poison-annotation query for `nsw`/`nuw`/`exact`, `or disjoint`, `icmp samesign`, `zext nneg`, GEP nowrap/inrange flags, return attributes and poison metadata; plain `inbounds` GEP is deferred to the executor's checked subset. Nested flagged `ConstantExpr` trees and global initializers remain gated |
 | Unknown intrinsic, `llvm.trap`, `llvm.assume` | UNKNOWN | M0/later | Every non-manifest intrinsic is gated; `tests/ir/m0-semantic-manifest.ll` |
 | Non-default pointer address spaces | UNKNOWN | M0/M4 | Direct instruction/function types, every type nested in reachable/global constant trees, and opaque-pointer `alloca`/GEP semantic types are gated; `tests/ir/m0-registration-and-limits.ll`, `tests/ir/m0-nested-constant-types.ll`, `tests/ir/m0-opaque-pointer-semantic-types.ll` |
 | Non-empty `llvm.global_ctors` | REJECTED | M0 | `tests/ir/m0-global-ctors.ll`; constructors are not scheduled |
@@ -67,7 +67,7 @@ of these cases into `SAFE`. `EXPERIMENTAL` is not used by M0/M1.
 | Random expression property tests | SUPPORTED | M1 | Fixed seeds; full-width APInt folds plus symbolic AST/assignment checks through STP cover arithmetic, div/rem, shifts, signed comparisons, select, concat/extract/ext/trunc, Bool/Not/BV1, random array updates, and randomized simplification-vs-raw-SMT equivalence |
 | Undefined division fold boundaries | SUPPORTED | M1 | Divide/remainder by zero and `sdiv(INT_MIN,-1)` remain explicit nodes; the later LLVM executor must gate UB |
 | LLVM `i1` instruction semantics | SUPPORTED | M3 | Stored as BV1; branch and select guards use the single explicit `ExprContext::toBool` conversion |
-| `undef`, poison, `freeze`, `nsw`, `nuw`, `exact` | UNKNOWN | M9 | These are not represented by the M1 Expr AST |
+| `undef`, poison, nondeterministic `freeze`, `nsw`, `nuw`, `exact` | M1 AST: NOT REPRESENTED | M9 | The M9 executor adds a scalar poison predicate for supported operations; direct undef/poison and conditional scalar-poison freeze through i8 are enumerated exactly; other per-use undef and wider freeze remain UNKNOWN |
 
 ## M2 solver boundary
 
@@ -124,14 +124,16 @@ that ordinary Clang `-O0` output is supported.
 | UNKNOWN: memory/pointers | `alloca`, `load`, `store`, `getelementptr`, pointer/integer casts and other non-integer casts |
 | UNKNOWN: calls/control | `invoke`, all EH instructions, `indirectbr`, `callbr`, `va_arg`; unsupported CFG cycles |
 | UNKNOWN: other value families | atomics/fences, floating point, vectors, aggregates, unsupported constants/opcodes/types |
-| UNKNOWN: LLVM special values/flags | `undef`, `poison`, `freeze`, `nsw`, `nuw`, `exact`, other poison-generating annotations, overshift, divide by zero and `sdiv INT_MIN/-1` |
+| LLVM special values/flags | Scalar poison, add/sub/mul/shl nsw/nuw, exact division/right shifts, and overshifts carry conditional poison; branch/switch, noundef return, and supported direct-call noundef scalar arguments consume it as UB. Direct undef/poison and conditional scalar-poison freeze through i8 use exact finite choices; other undef and freeze cases remain UNKNOWN |
+| Feasible LLVM immediate UB | `udiv`, `sdiv`, `urem`, or `srem` by zero; `sdiv` or `srem` of signed minimum by `-1` |
 
 ### M3 UNKNOWN and error reason codes
 
 | Kind | Stable codes |
 |---|---|
 | Unsupported value/IR | `UNKNOWN-UNSUPPORTED-CONSTANT`, `UNKNOWN-UNSUPPORTED-CAST`, `UNKNOWN-UNSUPPORTED-MEMORY-INSTRUCTION`, `UNKNOWN-UNSUPPORTED-CALL`, `UNKNOWN-UNSUPPORTED-EXCEPTION-INSTRUCTION`, `UNKNOWN-UNSUPPORTED-ATOMIC-INSTRUCTION`, `UNKNOWN-UNSUPPORTED-FLOATING-POINT`, `UNKNOWN-UNSUPPORTED-VECTOR`, `UNKNOWN-UNSUPPORTED-AGGREGATE`, `UNKNOWN-UNSUPPORTED-INSTRUCTION`, `UNKNOWN-UNSUPPORTED-TYPE` |
-| Undefined/special semantics | `UNKNOWN-UNDEF`, `UNKNOWN-POISON`, `UNKNOWN-FREEZE`, `UNKNOWN-NSW-NUW`, `UNKNOWN-EXACT`, `UNKNOWN-POISON-ANNOTATION`, `UNKNOWN-DIVIDE-BY-ZERO`, `UNKNOWN-SDIV-OVERFLOW`, `UNKNOWN-OVERSHIFT` |
+| Undefined/special semantics | `UNKNOWN-UNDEF`, `UNKNOWN-POISON`, `UNKNOWN-FREEZE`, `UNKNOWN-NSW-NUW`, `UNKNOWN-EXACT`, `UNKNOWN-POISON-ANNOTATION`, `UNKNOWN-OVERSHIFT` |
+| Feasible LLVM immediate UB | `LLVM-UB-DIVIDE-BY-ZERO`, `LLVM-UB-SDIV-OVERFLOW`, `LLVM-UB-SREM-OVERFLOW`; M5 reports `UNSAFE-UB` when the witness is closed over registered inputs |
 | Completeness/resource | `UNKNOWN-LOOP-BOUND`, `UNKNOWN-LOOP-UNSUPPORTED`, `UNKNOWN-WALL-TIME-LIMIT`, `UNKNOWN-INSTRUCTION-LIMIT`, `UNKNOWN-STATE-LIMIT`, `UNKNOWN-SOLVER-QUERY-LIMIT`, `UNKNOWN-SOLVER-TIMEOUT`, `UNKNOWN-SOLVER-UNKNOWN`, `UNKNOWN-SOLVER-FAILURE` |
 | Feasible program error | `REACHED-UNREACHABLE` |
 | Executor invariant failure | `INTERNAL-MISSING-SSA-BINDING`, `INTERNAL-INVALID-PHI-PREDECESSOR`, `INTERNAL-INVALID-SYMBOLIC-BINDING`, `INTERNAL-NO-FEASIBLE-SUCCESSOR`, `INTERNAL-INVALID-EXECUTOR-STATE`, `INTERNAL-SOLVER-ERROR`, `INTERNAL-EXPR-CONSTRUCTION` |
@@ -247,6 +249,44 @@ irreducible cycles, native differential relation checks, and pass/driver
 agreement. The only transformation accepted as a bound source is metadata
 still present on the analyzed IR.
 
+### M9 LLVM definedness boundary
+
+The pinned LangRef at LLVM revision
+`eccf4d44d346eee498b0ff709e625e3104448751` distinguishes immediate UB
+from poison. Integer division or remainder by zero, and signed division or
+remainder of the minimum signed value by `-1`, split feasible UB paths and
+produce solver witnesses. M5 emits `UNSAFE-UB` when the witness is closed over
+registered input bytes. Scalar poison constants, `add/sub/mul/shl` nsw/nuw,
+`udiv/sdiv/lshr/ashr` exact, and overshifts carry a Boolean poison condition.
+Arithmetic, comparisons, casts, select, and PHI propagate it; branch, switch,
+`noundef` return, and scalar `noundef` arguments of supported direct calls
+split feasible poison and defined paths. A direct call with an unused scalar
+poison argument and no `noundef` requirement can complete. Scalar `undef`
+and poison in pointer, aggregate, or byte memory remain explicit `UNKNOWN`.
+`freeze` of an already defined value is an exact identity. Direct scalar
+undef/poison operands and conditional scalar poison through i8 enumerate all
+possible results, binding one stable value per dynamic execution. Wider freeze
+operands remain `UNKNOWN-FREEZE`.
+
+The supported `inbounds` GEP subset proves each intermediate offset is within
+the object (including one-past), checks index and address arithmetic, and
+otherwise returns `UNKNOWN-INBOUNDS-GEP`. An index wider than the pointer index
+width is gated because signed-preserving truncation is not proved. Full-object
+`llvm.lifetime.start/end` is modeled for stack objects. An alloca named by
+`lifetime.start` is initially dead; start resets initialization, and repeated
+end is a no-op. A start on an already live object
+poisons its bytes in the pinned LangRef; the executor gates reads of those bytes
+as `UNKNOWN` until they are overwritten. The pinned LangRef specifies an
+object size or `-1`; mismatched sizes, including zero for a nonempty object,
+return `UNKNOWN`. Interior-pointer or unresolved lifetime
+regions remain `UNKNOWN-UNSUPPORTED-MEMORY-INSTRUCTION`.
+
+The hand-written [M9 LangRef cases](../tests/ir/m9/langref.ll),
+[artifact witness checks](../tests/check_m9_langref_artifacts.py), and
+[preflighted driver checks](../tests/check_m9_driver.py) pin these verdicts;
+[lifetime cases](../tests/ir/m7/lifetime.ll) cover before-start access,
+restart, repeated end, and partial regions.
+
 ## Explicit M0 opcode and intrinsic manifest
 
 `VALIDATED` below means only that the opcode belongs to the intended V1 input
@@ -258,7 +298,7 @@ contract; M0 does not execute it. Reachable opcodes are classified as follows:
 | UNKNOWN: exception handling | `invoke`, `resume`, `cleanupret`, `catchret`, `catchswitch`, `cleanuppad`, `catchpad`, `landingpad` |
 | UNKNOWN: floating point | `fneg`, FP arithmetic, FP/integer casts, `fptrunc`, `fpext`, `fcmp`, or any instruction carrying an FP type |
 | UNKNOWN: vectors | Any fixed/scalable vector-typed instruction, including element/shuffle operations |
-| UNKNOWN: value/UB semantics | `freeze`, poison/undef constants, all LLVM poison-generating instruction annotations and flagged nested `ConstantExpr`, including wrap/exact/disjoint/samesign/nneg and GEP nowrap/inbounds/inrange |
+| UNKNOWN: value/UB semantics | `freeze` wider than i8, scalar undef outside direct supported freeze, poison pointer/aggregate/memory, unsupported annotations and flagged nested `ConstantExpr`, including disjoint/samesign/nneg and GEP nowrap/inrange; scalar poison, supported wrap/exact flags, overshift, direct small freeze including conditional scalar poison, freeze of a defined value, and plain instruction `inbounds` GEP use checked M9 subsets |
 | UNKNOWN: unsupported control/ABI | `indirectbr`, `callbr`, `va_arg`, internal user opcodes, atomics/fences, inline assembly and unresolved calls |
 
 The only accepted intrinsic IDs are debug records, `lifetime.start/end`, and

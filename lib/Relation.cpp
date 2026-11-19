@@ -2,6 +2,9 @@
 
 #include "formal/SMTLibWriter.h"
 
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/raw_ostream.h"
+
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -244,22 +247,35 @@ exportCounterexampleJSON(const ExecutionResult &Result) {
   for (const PathResult &Path : Result.Paths) {
     if (!hasClosedRegisteredErrorPath(Path))
       continue;
-    std::ostringstream JSON;
-    JSON << "{\"format\":\"formal-m5-counterexample-v1\","
-            "\"state_id\":"
-         << Path.StateId << ",\"reason\":\"" << toReasonCode(Path.ErrorReason)
-         << "\",\"inputs\":[";
-    bool FirstRegion = true;
+    const bool IsLLVMUB =
+        Path.ErrorReason == PathErrorReason::DivisionByZero ||
+        Path.ErrorReason == PathErrorReason::SignedDivisionOverflow ||
+        Path.ErrorReason == PathErrorReason::SignedRemainderOverflow ||
+        Path.ErrorReason == PathErrorReason::PoisonConsumed;
+    auto LocationJSON = [](const IRLocation &Location) {
+      return llvm::json::Object{
+          {"function", Location.Function},
+          {"block", Location.BasicBlock},
+          {"opcode", Location.Opcode},
+          {"instruction_ordinal",
+           static_cast<std::int64_t>(Location.InstructionOrdinal)},
+          {"file", Location.SourceFile},
+          {"line", static_cast<std::int64_t>(Location.SourceLine)},
+          {"column", static_cast<std::int64_t>(Location.SourceColumn)}};
+    };
+    llvm::json::Array CallStack;
+    for (const CallFrameInfo &Frame : Path.CallStack)
+      CallStack.push_back(llvm::json::Object{
+          {"frame_id", static_cast<std::int64_t>(Frame.FrameId)},
+          {"function", Frame.Function},
+          {"call_site", LocationJSON(Frame.CallSite)},
+          {"continuation", LocationJSON(Frame.Continuation)}});
+    llvm::json::Array Inputs;
     for (const auto &Region : Path.Regions) {
       if (!Region.Input)
         continue;
-      if (!FirstRegion)
-        JSON << ',';
-      FirstRegion = false;
-      JSON << "{\"name\":\"" << Region.Name << "\",\"bytes\":[";
+      llvm::json::Array Bytes;
       for (std::uint64_t Index = 0; Index < Region.Size; ++Index) {
-        if (Index)
-          JSON << ',';
         const std::string Symbol =
             "input." + Region.Name + "." + std::to_string(Index);
         unsigned Byte = 0;
@@ -272,12 +288,33 @@ exportCounterexampleJSON(const ExecutionResult &Result) {
           Byte = static_cast<unsigned>(Scalar.Value.getZExtValue());
           break;
         }
-        JSON << Byte;
+        Bytes.push_back(static_cast<std::int64_t>(Byte));
       }
-      JSON << "]}";
+      Inputs.push_back(llvm::json::Object{
+          {"name", Region.Name}, {"bytes", std::move(Bytes)}});
     }
-    JSON << "]}\n";
-    return JSON.str();
+    SMTLibQuery Query;
+    Query.Constraints = Path.Constraints;
+    llvm::json::Object Witness{
+        {"format", "formal-m5-counterexample-v1"},
+        {"state_id", static_cast<std::int64_t>(Path.StateId)},
+        {"reason", toReasonCode(Path.ErrorReason)},
+        {"semantic_kind", IsLLVMUB ? "LLVM_UB" : "PROPERTY_ERROR"},
+        {"replay_class", "IR_ONLY"},
+        {"source", LocationJSON(Path.Location)},
+        {"call_stack", std::move(CallStack)},
+        {"detail", Path.Detail},
+        {"path_constraints_smt2", SMTLibWriter::writeQuery(Query)},
+        {"trigger_condition_smt2",
+         Path.Constraints.empty()
+             ? std::string()
+             : SMTLibWriter::write(Path.Constraints.back(), "ub_trigger",
+                                   false)},
+        {"inputs", std::move(Inputs)}};
+    std::string JSON;
+    llvm::raw_string_ostream(JSON) << llvm::json::Value(std::move(Witness))
+                                  << '\n';
+    return JSON;
   }
   return std::nullopt;
 }

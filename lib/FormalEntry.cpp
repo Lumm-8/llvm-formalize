@@ -244,6 +244,7 @@ bool acceptedOpcode(unsigned Opcode) {
   case llvm::Instruction::PHI:
   case llvm::Instruction::Call:
   case llvm::Instruction::Select:
+  case llvm::Instruction::Freeze:
   case llvm::Instruction::ExtractValue:
   case llvm::Instruction::InsertValue:
     return true;
@@ -271,9 +272,20 @@ unsupportedConstantTree(const llvm::Constant &Root) {
     Worklist.pop_back();
     if (!Visited.insert({Constant, InsideAggregate}).second)
       continue;
-    if (llvm::isa<llvm::PoisonValue>(Constant) ||
+    bool FrozenScalarUndef = false;
+    if (llvm::isa<llvm::UndefValue>(Constant) &&
+        !llvm::isa<llvm::PoisonValue>(Constant) &&
+        Constant->getType()->isIntegerTy()) {
+      FrozenScalarUndef = !Constant->use_empty();
+      for (const llvm::User *User : Constant->users())
+        FrozenScalarUndef &= llvm::isa<llvm::FreezeInst>(User);
+    }
+    if ((llvm::isa<llvm::PoisonValue>(Constant) &&
+         !Constant->getType()->isIntegerTy()) ||
         (llvm::isa<llvm::UndefValue>(Constant) &&
-         !Constant->getType()->isAggregateType() && !InsideAggregate))
+         !llvm::isa<llvm::PoisonValue>(Constant) &&
+         !Constant->getType()->isAggregateType() && !InsideAggregate &&
+         !FrozenScalarUndef))
       return formal::PreflightCode::UnsupportedValueSemantics;
     if (const auto *Expression = llvm::dyn_cast<llvm::ConstantExpr>(Constant)) {
       const auto *Operation = llvm::cast<llvm::Operator>(Expression);
@@ -761,6 +773,11 @@ validateResourceBounds(llvm::Module &M, formal::PreflightLimits Limits) {
 
 std::optional<formal::PreflightCode>
 unsupportedInstruction(const llvm::Instruction &Instruction) {
+  if (const auto *Freeze = llvm::dyn_cast<llvm::FreezeInst>(&Instruction))
+    if (llvm::isa<llvm::UndefValue, llvm::PoisonValue>(Freeze->getOperand(0)) &&
+        (!Freeze->getType()->isIntegerTy() ||
+         Freeze->getType()->getIntegerBitWidth() > 8))
+      return formal::PreflightCode::FreezeInstruction;
   VectorUse Vectors = instructionVectorUse(Instruction);
   if (Vectors == VectorUse::Scalable)
     return formal::PreflightCode::ScalableVector;
@@ -779,8 +796,6 @@ unsupportedInstruction(const llvm::Instruction &Instruction) {
   case llvm::Instruction::CatchPad:
   case llvm::Instruction::LandingPad:
     return formal::PreflightCode::ExceptionHandling;
-  case llvm::Instruction::Freeze:
-    return formal::PreflightCode::FreezeInstruction;
   case llvm::Instruction::IndirectBr:
   case llvm::Instruction::CallBr:
   case llvm::Instruction::UserOp1:
@@ -791,8 +806,30 @@ unsupportedInstruction(const llvm::Instruction &Instruction) {
     break;
   }
 
-  if (Instruction.hasPoisonGeneratingAnnotations())
-    return formal::PreflightCode::UnsupportedValueSemantics;
+  if (Instruction.hasPoisonGeneratingAnnotations()) {
+    const auto *GEP = llvm::dyn_cast<llvm::GetElementPtrInst>(&Instruction);
+    const auto *Binary = llvm::dyn_cast<llvm::BinaryOperator>(&Instruction);
+    const bool SupportedWrap =
+        Binary && (Binary->getOpcode() == llvm::Instruction::Add ||
+                   Binary->getOpcode() == llvm::Instruction::Sub ||
+                   Binary->getOpcode() == llvm::Instruction::Mul ||
+                   Binary->getOpcode() == llvm::Instruction::Shl) &&
+        !Binary->hasMetadataOtherThanDebugLoc();
+    const bool SupportedExact =
+        Binary && (Binary->getOpcode() == llvm::Instruction::UDiv ||
+                   Binary->getOpcode() == llvm::Instruction::SDiv ||
+                   Binary->getOpcode() == llvm::Instruction::LShr ||
+                   Binary->getOpcode() == llvm::Instruction::AShr) &&
+        !Binary->hasMetadataOtherThanDebugLoc();
+    const bool SupportedGEP =
+        GEP && GEP->getNoWrapFlags().getRaw() ==
+                   llvm::GEPNoWrapFlags::inBounds().getRaw() &&
+        !llvm::cast<llvm::GEPOperator>(GEP)->getInRange() &&
+        !GEP->hasMetadataOtherThanDebugLoc() &&
+        !GEP->hasPoisonGeneratingReturnAttributes();
+    if (!SupportedWrap && !SupportedExact && !SupportedGEP)
+      return formal::PreflightCode::UnsupportedValueSemantics;
+  }
 
   if (!acceptedOpcode(Instruction.getOpcode()))
     return formal::PreflightCode::UnsupportedOpcode;

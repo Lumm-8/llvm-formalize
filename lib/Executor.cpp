@@ -1076,6 +1076,11 @@ struct ScalarExecutor::Impl {
                  "M4 requires matching pointer/index widths up to 64 bits");
       return std::nullopt;
     }
+    if (GEP.isInBounds() && Width < 16) {
+      incomplete(State, IncompletenessReason::InboundsGEP,
+                 "inbounds GEP narrow index arithmetic is not proved");
+      return std::nullopt;
+    }
     if (GEP.getSourceElementType()->isVectorTy()) {
       incomplete(State, IncompletenessReason::UnsupportedVector,
                  "vector GEP source is unsupported");
@@ -1099,6 +1104,16 @@ struct ScalarExecutor::Impl {
                      "inbounds GEP from null has unsupported preconditions");
           return false;
         }
+        const std::uint64_t PointerMax =
+            Width == 64 ? std::numeric_limits<std::uint64_t>::max()
+                        : (std::uint64_t{1} << Width) - 1;
+        if (Candidate.Object->LogicalBase > PointerMax ||
+            Candidate.Object->Size >
+                PointerMax - Candidate.Object->LogicalBase) {
+          incomplete(State, IncompletenessReason::InboundsGEP,
+                     "inbounds GEP numeric object address may wrap");
+          return false;
+        }
         ExprRef Nonnegative = Expressions.logicalNot(Expressions.slt(
             Candidate.Offset, Expressions.constant(Width, 0)));
         ExprRef AtMostEnd = Expressions.ule(
@@ -1119,6 +1134,8 @@ struct ScalarExecutor::Impl {
       }
       return true;
     };
+    if (!CheckInbounds())
+      return std::nullopt;
     bool First = true;
     for (llvm::Value *IndexValue : GEP.indices()) {
       std::uint64_t Stride = 0;
@@ -1194,12 +1211,22 @@ struct ScalarExecutor::Impl {
       std::optional<SymbolicValue> Index = resolve(IndexValue, State);
       if (!Index)
         return std::nullopt;
+      if (Index->poisonCondition()) {
+        incomplete(State, IncompletenessReason::PoisonValue,
+                   "GEP index may be poison; pointer poison is not represented");
+        return std::nullopt;
+      }
       if (Index->isPointer()) {
         internalError(State, InternalErrorReason::InvalidSymbolicBinding,
                       "GEP integer index resolved to a pointer");
         return std::nullopt;
       }
       ExprRef IndexExpr = Index->bitVector();
+      if (GEP.isInBounds() && IndexExpr->width() > Width) {
+        incomplete(State, IncompletenessReason::InboundsGEP,
+                   "inbounds GEP cannot prove signed index truncation");
+        return std::nullopt;
+      }
       if (IndexExpr->width() < Width)
         IndexExpr = Expressions.sext(IndexExpr, Width);
       else if (IndexExpr->width() > Width)
@@ -1541,7 +1568,8 @@ struct ScalarExecutor::Impl {
 
   bool enforceDefined(ExecutionState &State, const ExprRef &Good,
                       IncompletenessReason BadReason,
-                      const std::string &BadDetail) {
+                      const std::string &BadDetail,
+                      PathErrorReason BadError = PathErrorReason::None) {
     ExprRef Bad;
     try {
       Bad = Expressions.logicalNot(Good);
@@ -1598,9 +1626,12 @@ struct ScalarExecutor::Impl {
         incomplete(BadState, IncompletenessReason::StateLimit,
                    "state limit reached during definedness split");
       } else if (addConstraint(BadState, Bad)) {
-        if (BadOutcome.Disposition == QueryDisposition::Feasible)
-          incomplete(BadState, BadReason, BadDetail);
-        else if (BadOutcome.Disposition == QueryDisposition::Incomplete)
+        if (BadOutcome.Disposition == QueryDisposition::Feasible) {
+          if (BadError == PathErrorReason::None)
+            incomplete(BadState, BadReason, BadDetail);
+          else
+            pathError(BadState, BadError, BadDetail);
+        } else if (BadOutcome.Disposition == QueryDisposition::Incomplete)
           incomplete(BadState, BadOutcome.Reason, std::move(BadOutcome.Detail));
         else
           internalError(BadState, InternalErrorReason::SolverInternalError,
@@ -2024,8 +2055,22 @@ struct ScalarExecutor::Impl {
       return SymbolicValue(std::move(*Pointer));
     }
     if (llvm::isa<llvm::PoisonValue>(Value)) {
+      const llvm::Instruction *Consumer = State.pc().instruction();
+      const auto *Call = llvm::dyn_cast_or_null<llvm::CallInst>(Consumer);
+      const bool DefinedCall = Call && Call->getCalledFunction() &&
+                               !Call->getCalledFunction()->isDeclaration();
+      const bool SupportedConsumer =
+          llvm::isa_and_nonnull<llvm::BinaryOperator, llvm::ICmpInst,
+                               llvm::CastInst, llvm::SelectInst,
+                               llvm::PHINode, llvm::BranchInst,
+                               llvm::SwitchInst, llvm::ReturnInst,
+                               llvm::StoreInst>(Consumer) || DefinedCall;
+      if (const auto *Integer = llvm::dyn_cast<llvm::IntegerType>(Value->getType());
+          Integer && SupportedConsumer)
+        return SymbolicValue(Expressions.constant(Integer->getBitWidth(), 0),
+                             Expressions.boolean(true));
       incomplete(State, IncompletenessReason::PoisonValue,
-                 "M3 does not model LLVM poison values");
+                 "poison constant needs a supported scalar consumer");
       return std::nullopt;
     }
     if (llvm::isa<llvm::UndefValue>(Value)) {
@@ -2066,6 +2111,23 @@ struct ScalarExecutor::Impl {
                     "SSA binding does not match the LLVM value type");
       return std::nullopt;
     }
+    if (Binding->poisonCondition()) {
+      const llvm::Instruction *Consumer = State.pc().instruction();
+      const auto *Call = llvm::dyn_cast_or_null<llvm::CallInst>(Consumer);
+      const bool DefinedCall = Call && Call->getCalledFunction() &&
+                               !Call->getCalledFunction()->isDeclaration();
+      const bool Propagates =
+          llvm::isa_and_nonnull<llvm::BinaryOperator, llvm::ICmpInst,
+                               llvm::CastInst, llvm::SelectInst,
+                               llvm::PHINode, llvm::BranchInst,
+                               llvm::SwitchInst, llvm::ReturnInst,
+                               llvm::FreezeInst>(Consumer) || DefinedCall;
+      if (!Propagates) {
+        incomplete(State, IncompletenessReason::PoisonValue,
+                   "consumer needs poison-aware pointer, aggregate, memory, call, or return semantics");
+        return std::nullopt;
+      }
+    }
     return *Binding;
   }
 
@@ -2076,6 +2138,26 @@ struct ScalarExecutor::Impl {
   SymbolicValue boolToI1(const ExprRef &Boolean) {
     return SymbolicValue(Expressions.select(Boolean, Expressions.constant(1, 1),
                                             Expressions.constant(1, 0)));
+  }
+
+  ExprRef poisonOr(ExprRef Left, ExprRef Right) {
+    if (!Left)
+      return Right;
+    if (!Right)
+      return Left;
+    return Expressions.select(Left, Expressions.boolean(true), Right);
+  }
+
+  bool consumeScalarPoison(ExecutionState &State,
+                           const SymbolicValue &Value,
+                           const char *Sink) {
+    if (!Value.poisonCondition())
+      return true;
+    return enforceDefined(State,
+                          Expressions.logicalNot(Value.poisonCondition()),
+                          IncompletenessReason::PoisonValue,
+                          std::string("poison consumed by ") + Sink,
+                          PathErrorReason::PoisonConsumed);
   }
 
   bool bindResult(llvm::Instruction &Instruction, ExecutionState &State,
@@ -2182,6 +2264,21 @@ struct ScalarExecutor::Impl {
     const unsigned Width = Left->width();
 
     try {
+      if ((Binary.getOpcode() == llvm::Instruction::UDiv ||
+           Binary.getOpcode() == llvm::Instruction::SDiv ||
+           Binary.getOpcode() == llvm::Instruction::URem ||
+           Binary.getOpcode() == llvm::Instruction::SRem) &&
+          !consumeScalarPoison(State, Right, "division operand"))
+        return;
+      if ((Binary.getOpcode() == llvm::Instruction::UDiv ||
+           Binary.getOpcode() == llvm::Instruction::SDiv ||
+           Binary.getOpcode() == llvm::Instruction::URem ||
+           Binary.getOpcode() == llvm::Instruction::SRem) &&
+          Left->poisonCondition()) {
+        incomplete(State, IncompletenessReason::PoisonValue,
+                   "division with a poison dividend needs conditional UB ordering");
+        return;
+      }
       switch (Binary.getOpcode()) {
       case llvm::Instruction::UDiv:
       case llvm::Instruction::SDiv:
@@ -2191,9 +2288,11 @@ struct ScalarExecutor::Impl {
             Expressions.eq(R, Expressions.constant(Width, 0)));
         if (!enforceDefined(State, NonZero,
                             IncompletenessReason::DivideByZero,
-                            "integer division/remainder by zero"))
+                            "integer division/remainder by zero",
+                            PathErrorReason::DivisionByZero))
           return;
-        if (Binary.getOpcode() == llvm::Instruction::SDiv) {
+        if (Binary.getOpcode() == llvm::Instruction::SDiv ||
+            Binary.getOpcode() == llvm::Instruction::SRem) {
           ExprRef IsMin = Expressions.eq(
               L, Expressions.constant(llvm::APInt::getSignedMinValue(Width)));
           ExprRef IsMinusOne = Expressions.eq(
@@ -2203,7 +2302,10 @@ struct ScalarExecutor::Impl {
           if (!enforceDefined(
                   State, Expressions.logicalNot(Overflow),
                   IncompletenessReason::SignedDivisionOverflow,
-                  "sdiv INT_MIN / -1 is not modeled as an ordinary value"))
+                  "signed division/remainder INT_MIN / -1 is LLVM undefined behavior",
+                  Binary.getOpcode() == llvm::Instruction::SDiv
+                      ? PathErrorReason::SignedDivisionOverflow
+                      : PathErrorReason::SignedRemainderOverflow))
             return;
         }
         break;
@@ -2211,13 +2313,6 @@ struct ScalarExecutor::Impl {
       case llvm::Instruction::Shl:
       case llvm::Instruction::LShr:
       case llvm::Instruction::AShr: {
-        ExprRef InRange =
-            Expressions.ult(R, Expressions.constant(llvm::APInt(Width, Width)));
-        if (!enforceDefined(State, InRange,
-                            IncompletenessReason::Overshift,
-                            "LLVM shift amount is greater than or equal to "
-                            "the value width"))
-          return;
         break;
       }
       default:
@@ -2271,7 +2366,64 @@ struct ScalarExecutor::Impl {
                        std::string(Binary.getOpcodeName()));
         return;
       }
-      bindResult(Binary, State, SymbolicValue(std::move(Result)));
+      ExprRef Poison = poisonOr(Left->poisonCondition(),
+                                Right.poisonCondition());
+      if (Binary.getOpcode() == llvm::Instruction::Shl ||
+          Binary.getOpcode() == llvm::Instruction::LShr ||
+          Binary.getOpcode() == llvm::Instruction::AShr)
+        Poison = poisonOr(Poison, Expressions.logicalNot(Expressions.ult(
+            R, Expressions.constant(llvm::APInt(Width, Width)))));
+      if (const auto *Exact =
+              llvm::dyn_cast<llvm::PossiblyExactOperator>(&Binary);
+          Exact && Exact->isExact()) {
+        ExprRef Violation;
+        if (Binary.getOpcode() == llvm::Instruction::UDiv)
+          Violation = Expressions.logicalNot(Expressions.eq(
+              Expressions.urem(L, R), Expressions.constant(Width, 0)));
+        else if (Binary.getOpcode() == llvm::Instruction::SDiv)
+          Violation = Expressions.logicalNot(Expressions.eq(
+              Expressions.srem(L, R), Expressions.constant(Width, 0)));
+        else if (Binary.getOpcode() == llvm::Instruction::LShr ||
+                 Binary.getOpcode() == llvm::Instruction::AShr)
+          Violation = Expressions.logicalNot(Expressions.eq(
+              Expressions.shl(Result, R), L));
+        if (Violation)
+          Poison = poisonOr(Poison, Violation);
+      }
+      if (const auto *Flags =
+              llvm::dyn_cast<llvm::OverflowingBinaryOperator>(&Binary);
+          Flags && (Flags->hasNoSignedWrap() || Flags->hasNoUnsignedWrap())) {
+        const bool Multiply = Binary.getOpcode() == llvm::Instruction::Mul;
+        const bool Shift = Binary.getOpcode() == llvm::Instruction::Shl;
+        const unsigned WideWidth = (Multiply || Shift) ? Width * 2 : Width + 1;
+        auto WideResult = [&](bool Signed) {
+          ExprRef A = Signed ? Expressions.sext(L, WideWidth)
+                             : Expressions.zext(L, WideWidth);
+          ExprRef B = Signed ? Expressions.sext(R, WideWidth)
+                             : Expressions.zext(R, WideWidth);
+          switch (Binary.getOpcode()) {
+          case llvm::Instruction::Add: return Expressions.add(A, B);
+          case llvm::Instruction::Sub: return Expressions.sub(A, B);
+          case llvm::Instruction::Mul: return Expressions.mul(A, B);
+          case llvm::Instruction::Shl: return Expressions.shl(A, B);
+          default: return ExprRef{};
+          }
+        };
+        if (Flags->hasNoSignedWrap()) {
+          ExprRef Wide = WideResult(true);
+          ExprRef Truncated = Expressions.trunc(Wide, Width);
+          Poison = poisonOr(Poison, Expressions.logicalNot(Expressions.eq(
+              Wide, Expressions.sext(Truncated, WideWidth))));
+        }
+        if (Flags->hasNoUnsignedWrap()) {
+          ExprRef Wide = WideResult(false);
+          ExprRef Truncated = Expressions.trunc(Wide, Width);
+          Poison = poisonOr(Poison, Expressions.logicalNot(Expressions.eq(
+              Wide, Expressions.zext(Truncated, WideWidth))));
+        }
+      }
+      bindResult(Binary, State,
+                 SymbolicValue(std::move(Result), std::move(Poison)));
     } catch (const std::exception &Error) {
       internalError(State, InternalErrorReason::ExpressionConstructionFailure,
                     Error.what());
@@ -2415,7 +2567,10 @@ struct ScalarExecutor::Impl {
                    "unsupported icmp predicate");
         return;
       }
-      bindResult(Compare, State, boolToI1(Condition));
+      bindResult(Compare, State,
+                 SymbolicValue(boolToI1(Condition).bitVector(),
+                               poisonOr(Left->poisonCondition(),
+                                        Right->poisonCondition())));
     } catch (const std::exception &Error) {
       internalError(State, InternalErrorReason::ExpressionConstructionFailure,
                     Error.what());
@@ -2465,7 +2620,8 @@ struct ScalarExecutor::Impl {
                        std::string(Cast.getOpcodeName()));
         return;
       }
-      bindResult(Cast, State, SymbolicValue(std::move(Result)));
+      bindResult(Cast, State,
+                 SymbolicValue(std::move(Result), Input->poisonCondition()));
     } catch (const std::exception &Error) {
       internalError(State, InternalErrorReason::ExpressionConstructionFailure,
                     Error.what());
@@ -2487,6 +2643,11 @@ struct ScalarExecutor::Impl {
       return;
     try {
       if (TrueValue->isPointer() || FalseValue->isPointer()) {
+        if (Condition->poisonCondition()) {
+          incomplete(State, IncompletenessReason::PoisonValue,
+                     "pointer select condition may be poison");
+          return;
+        }
         if (!TrueValue->isPointer() || !FalseValue->isPointer()) {
           internalError(State, InternalErrorReason::InvalidSymbolicBinding,
                         "select pointer arms have different value kinds");
@@ -2535,7 +2696,18 @@ struct ScalarExecutor::Impl {
       ExprRef Result = Expressions.select(toBool(*Condition),
                                           TrueValue->bitVector(),
                                           FalseValue->bitVector());
-      bindResult(Select, State, SymbolicValue(std::move(Result)));
+      ExprRef TruePoison = TrueValue->poisonCondition()
+                               ? TrueValue->poisonCondition()
+                               : Expressions.boolean(false);
+      ExprRef FalsePoison = FalseValue->poisonCondition()
+                                ? FalseValue->poisonCondition()
+                                : Expressions.boolean(false);
+      ExprRef SelectedPoison = Expressions.select(toBool(*Condition),
+                                                  TruePoison, FalsePoison);
+      ExprRef Poison = poisonOr(Condition->poisonCondition(),
+                                SelectedPoison);
+      bindResult(Select, State,
+                 SymbolicValue(std::move(Result), std::move(Poison)));
     } catch (const std::exception &Error) {
       internalError(State, InternalErrorReason::ExpressionConstructionFailure,
                     Error.what());
@@ -2575,6 +2747,59 @@ struct ScalarExecutor::Impl {
                  "alloca byte size overflows uint64");
       return;
     }
+    // LangRef makes an alloca initially dead when a lifetime.start names it.
+    // An opaque pointer source could name this alloca too; leave that case
+    // UNKNOWN before any access could falsely appear live.
+    bool InitiallyDead = false;
+    for (const llvm::BasicBlock &Block : *Alloca.getFunction())
+      for (const llvm::Instruction &Instruction : Block) {
+        const auto *Intrinsic = llvm::dyn_cast<llvm::IntrinsicInst>(&Instruction);
+        if (!Intrinsic || Intrinsic->getIntrinsicID() !=
+                              llvm::Intrinsic::lifetime_start)
+          continue;
+        if (Intrinsic->arg_size() != 2) {
+          incomplete(State, IncompletenessReason::UnsupportedMemoryInstruction,
+                     "lifetime.start has an unsupported signature");
+          return;
+        }
+        const llvm::Value *Underlying =
+            llvm::getUnderlyingObject(Intrinsic->getArgOperand(1));
+        if (Underlying == &Alloca) {
+          const auto *LifetimeSize =
+              llvm::dyn_cast<llvm::ConstantInt>(Intrinsic->getArgOperand(0));
+          if (!LifetimeSize ||
+              (!LifetimeSize->getValue().isAllOnes() &&
+               LifetimeSize->getZExtValue() != Total)) {
+            incomplete(State,
+                       IncompletenessReason::UnsupportedMemoryInstruction,
+                       "lifetime.start size does not match its stack object");
+            return;
+          }
+          const llvm::Value *Pointer = Intrinsic->getArgOperand(1);
+          while (Pointer != &Alloca) {
+            Pointer = Pointer->stripPointerCasts();
+            if (Pointer == &Alloca)
+              break;
+            const auto *GEP = llvm::dyn_cast<llvm::GEPOperator>(Pointer);
+            if (!GEP || llvm::any_of(GEP->indices(), [](const llvm::Use &Index) {
+                  const auto *Constant =
+                      llvm::dyn_cast<llvm::ConstantInt>(Index.get());
+                  return !Constant || !Constant->isZero();
+                })) {
+              incomplete(State,
+                         IncompletenessReason::UnsupportedMemoryInstruction,
+                         "lifetime.start does not name the alloca base");
+              return;
+            }
+            Pointer = GEP->getPointerOperand();
+          }
+          InitiallyDead = true;
+        } else if (!llvm::isa<llvm::AllocaInst, llvm::GlobalValue>(Underlying)) {
+          incomplete(State, IncompletenessReason::UnsupportedMemoryInstruction,
+                     "lifetime.start has an unresolved stack object");
+          return;
+        }
+      }
     std::uint64_t Alignment = Alloca.getAlign().value();
     auto Object = allocateObject(
         State, AllocationKind::Stack, Total, Alignment,
@@ -2583,6 +2808,16 @@ struct ScalarExecutor::Impl {
         false);
     if (!Object)
       return;
+    if (InitiallyDead) {
+      bool Copied = false;
+      auto Memory = State.addressSpace().getWriteable(Object->Id, Copied);
+      if (!Memory) {
+        internalError(State, InternalErrorReason::MemoryModelError,
+                      "new stack object disappeared before lifetime setup");
+        return;
+      }
+      Memory->endLifetime();
+    }
     State.frame().addStackObject(Object->Id);
     unsigned Width = layout(State).getPointerSizeInBits(0);
     bindResult(Alloca, State,
@@ -2711,6 +2946,11 @@ struct ScalarExecutor::Impl {
     auto Inserted = resolve(Insert.getInsertedValueOperand(), State);
     if (!Aggregate || !Inserted)
       return;
+    if (Inserted->poisonCondition()) {
+      incomplete(State, IncompletenessReason::PoisonValue,
+                 "aggregate insertion needs per-field poison tracking");
+      return;
+    }
     if (!Aggregate->isAggregate()) {
       incomplete(State, IncompletenessReason::UnsupportedAggregate,
                  "insertvalue operand is not an aggregate");
@@ -2868,6 +3108,11 @@ struct ScalarExecutor::Impl {
       Stored = resolve(Store->getValueOperand(), State);
       if (!Stored)
         return;
+      if (Stored->poisonCondition()) {
+        incomplete(State, IncompletenessReason::PoisonValue,
+                   "conditional poison store needs byte poison tracking");
+        return;
+      }
     }
     const PointerValue &Address = Pointer->pointer();
     if (Address.AddressSpace != 0) {
@@ -3551,6 +3796,8 @@ struct ScalarExecutor::Impl {
         resolve(Branch.getCondition(), State);
     if (!Condition)
       return;
+    if (!consumeScalarPoison(State, *Condition, "branch condition"))
+      return;
     try {
       ExprRef TrueGuard = toBool(*Condition);
       ExprRef FalseGuard = Expressions.logicalNot(TrueGuard);
@@ -3567,6 +3814,8 @@ struct ScalarExecutor::Impl {
     std::optional<SymbolicValue> Condition =
         resolve(Switch.getCondition(), State);
     if (!Condition)
+      return;
+    if (!consumeScalarPoison(State, *Condition, "switch condition"))
       return;
     try {
       std::vector<GuardedDestination> Destinations;
@@ -4474,8 +4723,19 @@ struct ScalarExecutor::Impl {
       auto Value = resolve(Call.getArgOperand(Index), State);
       if (!Value)
         return;
-      if ((Call.paramHasAttr(Index, llvm::Attribute::NoUndef) ||
-           Callee->hasParamAttribute(Index, llvm::Attribute::NoUndef)) &&
+      const bool RequiresDefined =
+          Call.paramHasAttr(Index, llvm::Attribute::NoUndef) ||
+          Callee->hasParamAttribute(Index, llvm::Attribute::NoUndef);
+      if (Value->poisonCondition() && RequiresDefined &&
+          !consumeScalarPoison(State, *Value, "noundef call argument"))
+        return;
+      if (Value->poisonCondition() &&
+          (Value->isPointer() || Value->isAggregate())) {
+        incomplete(State, IncompletenessReason::PoisonValue,
+                   "non-scalar call argument poison propagation is not modeled");
+        return;
+      }
+      if (RequiresDefined &&
           Value->isAggregate() &&
           !requireNoundefAggregate(Value->aggregate(), Type, State,
                                    "argument"))
@@ -4703,6 +4963,14 @@ struct ScalarExecutor::Impl {
       if (!Value)
         return;
     }
+    if (Value && Value->poisonCondition() &&
+        (State.frame().function()->getAttributes().hasRetAttr(
+             llvm::Attribute::NoUndef) ||
+         (State.frame().callSite() &&
+          llvm::cast<llvm::CallInst>(State.frame().callSite())
+              ->getAttributes().hasRetAttr(llvm::Attribute::NoUndef))) &&
+        !consumeScalarPoison(State, *Value, "noundef return"))
+      return;
     if (Value && Value->isAggregate() &&
         (State.frame().function()->getAttributes().hasRetAttr(
              llvm::Attribute::NoUndef) ||
@@ -5109,10 +5377,6 @@ struct ScalarExecutor::Impl {
     if (!SizeValue || !Pointer)
       return;
     auto Size = concreteUnsigned(SizeValue->bitVector());
-    if (Size && *Size == 0) {
-      State.pc().advance();
-      return;
-    }
     if (!Size || !Pointer->isPointer() ||
         Pointer->pointer().Candidates.size() != 1) {
       incomplete(State, IncompletenessReason::UnsupportedMemoryInstruction,
@@ -5134,10 +5398,13 @@ struct ScalarExecutor::Impl {
       return;
     }
     const auto *Entry = State.addressSpace().find(Candidate.Object->Id);
-    if (!Entry || Entry->Object.get() != Candidate.Object.get() ||
-        (!IsStart && !Entry->State->live())) {
+    if (!Entry || Entry->Object.get() != Candidate.Object.get()) {
       incomplete(State, IncompletenessReason::UnsupportedMemoryInstruction,
-                 "stack lifetime object is absent or already dead");
+                 "stack lifetime object is absent");
+      return;
+    }
+    if (!IsStart && !Entry->State->live()) {
+      State.pc().advance();
       return;
     }
     bool Copied = false;
@@ -5238,28 +5505,173 @@ struct ScalarExecutor::Impl {
     State.addExecutedInstructions(1);
     ++Statistics.ExecutedInstructions;
 
-    if (llvm::isa<llvm::FreezeInst>(Instruction)) {
-      incomplete(State, IncompletenessReason::FreezeInstruction,
-                 "M3 does not model freeze");
+    if (auto *Freeze = llvm::dyn_cast<llvm::FreezeInst>(Instruction)) {
+      if (llvm::isa<llvm::UndefValue, llvm::PoisonValue>(Freeze->getOperand(0))) {
+        if (!Freeze->getType()->isIntegerTy() ||
+            Freeze->getType()->getIntegerBitWidth() > 8) {
+          incomplete(State, IncompletenessReason::FreezeInstruction,
+                     "finite freeze expansion supports scalar integers through i8");
+          return;
+        }
+        const unsigned Width = Freeze->getType()->getIntegerBitWidth();
+        const std::uint64_t ChoiceCount = std::uint64_t{1} << Width;
+        if (Statistics.StatesCreated > Options.MaxStates ||
+            ChoiceCount - 1 > Options.MaxStates - Statistics.StatesCreated) {
+          incomplete(State, IncompletenessReason::StateLimit,
+                     "freeze choices exceed the state limit");
+          return;
+        }
+        const ExecutionState Base = State;
+        std::vector<ExecutionState> Successors;
+        Successors.reserve(ChoiceCount);
+        for (std::uint64_t Choice = 0; Choice < ChoiceCount; ++Choice) {
+          ExecutionState Child = Base;
+          if (Choice != 0)
+            Child.setId(allocateStateId());
+          Child.setDepth(Base.depth() + 1);
+          if (bindResult(*Freeze, Child,
+                         SymbolicValue(Expressions.constant(Width, Choice))))
+            Successors.push_back(std::move(Child));
+        }
+        Statistics.Forks += ChoiceCount - 1;
+        for (auto It = Successors.rbegin(); It != Successors.rend(); ++It)
+          Worklist.schedule(std::move(*It));
+        State.setStatus(ExecutionStateStatus::Scheduled);
+        return;
+      }
+      std::optional<SymbolicValue> Value = resolve(Freeze->getOperand(0), State);
+      if (!Value)
+        return;
+      if (!Value->poisonCondition()) {
+        bindResult(*Freeze, State, std::move(*Value));
+        return;
+      }
+      if (Value->isPointer() || Value->isAggregate() ||
+          !Freeze->getType()->isIntegerTy() ||
+          Freeze->getType()->getIntegerBitWidth() > 8) {
+        incomplete(State, IncompletenessReason::FreezeInstruction,
+                   "conditional poison freeze requires scalar integer width at most 8");
+        return;
+      }
+      // Pinned LangRef: on defined inputs freeze is the identity; on poison
+      // inputs it makes one fixed choice for this dynamic execution.  Split
+      // the predicate first, so a poison payload is never observed as a
+      // defined result. Finite enumeration keeps the exported relation closed.
+      ExprRef Defined = Expressions.logicalNot(Value->poisonCondition());
+      const ExecutionState Base = State;
+      QueryOutcome DefinedOutcome = query(Base, Defined);
+      QueryOutcome PoisonOutcome = query(Base, Value->poisonCondition());
+      if (DefinedOutcome.Disposition == QueryDisposition::Infeasible)
+        ++Statistics.PrunedPaths;
+      if (PoisonOutcome.Disposition == QueryDisposition::Infeasible)
+        ++Statistics.PrunedPaths;
+      const unsigned Width = Freeze->getType()->getIntegerBitWidth();
+      const std::uint64_t ChoiceCount = std::uint64_t{1} << Width;
+      const std::uint64_t SuccessorCount =
+          (DefinedOutcome.Disposition != QueryDisposition::Infeasible) +
+          (PoisonOutcome.Disposition == QueryDisposition::Feasible
+               ? ChoiceCount
+               : PoisonOutcome.Disposition != QueryDisposition::Infeasible);
+      if (!SuccessorCount) {
+        internalError(State, InternalErrorReason::NoFeasibleSuccessor,
+                      "freeze defined and poison guards were both UNSAT");
+        return;
+      }
+      if (Statistics.StatesCreated > Options.MaxStates ||
+          SuccessorCount - 1 > Options.MaxStates - Statistics.StatesCreated) {
+        incomplete(State, IncompletenessReason::StateLimit,
+                   "conditional freeze choices exceed the state limit");
+        return;
+      }
+      Statistics.Forks += SuccessorCount - 1;
+      std::vector<ExecutionState> Successors;
+      Successors.reserve(SuccessorCount);
+      std::uint64_t Spawned = 0;
+      auto makeChild = [&](const ExprRef &Guard) {
+        ExecutionState Child = Base;
+        if (Spawned++)
+          Child.setId(allocateStateId());
+        Child.setDepth(Base.depth() + 1);
+        addConstraint(Child, Guard);
+        return Child;
+      };
+      if (DefinedOutcome.Disposition != QueryDisposition::Infeasible) {
+        ExecutionState Child = makeChild(Defined);
+        if (Child.status() == ExecutionStateStatus::Running) {
+          if (DefinedOutcome.Disposition == QueryDisposition::Feasible) {
+            if (bindResult(*Freeze, Child,
+                           SymbolicValue(Value->bitVector())))
+              Successors.push_back(std::move(Child));
+          } else if (DefinedOutcome.Disposition == QueryDisposition::Incomplete) {
+            incomplete(Child, DefinedOutcome.Reason,
+                       std::move(DefinedOutcome.Detail));
+          } else {
+            internalError(Child, InternalErrorReason::SolverInternalError,
+                          std::move(DefinedOutcome.Detail));
+          }
+        }
+      }
+      if (PoisonOutcome.Disposition != QueryDisposition::Infeasible) {
+        if (PoisonOutcome.Disposition == QueryDisposition::Feasible) {
+          for (std::uint64_t Choice = 0; Choice < ChoiceCount; ++Choice) {
+            ExecutionState Child = makeChild(Value->poisonCondition());
+            if (Child.status() == ExecutionStateStatus::Running &&
+                bindResult(*Freeze, Child,
+                           SymbolicValue(Expressions.constant(Width, Choice))))
+              Successors.push_back(std::move(Child));
+          }
+        } else {
+          ExecutionState Child = makeChild(Value->poisonCondition());
+          if (Child.status() == ExecutionStateStatus::Running) {
+            if (PoisonOutcome.Disposition == QueryDisposition::Incomplete)
+              incomplete(Child, PoisonOutcome.Reason,
+                         std::move(PoisonOutcome.Detail));
+            else
+              internalError(Child, InternalErrorReason::SolverInternalError,
+                            std::move(PoisonOutcome.Detail));
+          }
+        }
+      }
+      for (auto It = Successors.rbegin(); It != Successors.rend(); ++It)
+        Worklist.schedule(std::move(*It));
+      State.setStatus(ExecutionStateStatus::Scheduled);
       return;
     }
     if (const auto *Overflowing =
             llvm::dyn_cast<llvm::OverflowingBinaryOperator>(Instruction);
         Overflowing &&
-        (Overflowing->hasNoSignedWrap() || Overflowing->hasNoUnsignedWrap())) {
+        (Overflowing->hasNoSignedWrap() || Overflowing->hasNoUnsignedWrap()) &&
+        Instruction->getOpcode() != llvm::Instruction::Add &&
+        Instruction->getOpcode() != llvm::Instruction::Sub &&
+        Instruction->getOpcode() != llvm::Instruction::Mul &&
+        Instruction->getOpcode() != llvm::Instruction::Shl) {
       incomplete(State, IncompletenessReason::NoWrapFlags,
                  "M3 does not erase or approximate nsw/nuw flags");
       return;
     }
     if (const auto *PossiblyExact =
             llvm::dyn_cast<llvm::PossiblyExactOperator>(Instruction);
-        PossiblyExact && PossiblyExact->isExact()) {
+        PossiblyExact && PossiblyExact->isExact() &&
+        Instruction->getOpcode() != llvm::Instruction::UDiv &&
+        Instruction->getOpcode() != llvm::Instruction::SDiv &&
+        Instruction->getOpcode() != llvm::Instruction::LShr &&
+        Instruction->getOpcode() != llvm::Instruction::AShr) {
       incomplete(State, IncompletenessReason::ExactFlag,
                  "M3 does not erase or approximate exact flags");
       return;
     }
     if (Instruction->hasPoisonGeneratingAnnotations() &&
         !llvm::isa<llvm::CallInst>(Instruction) &&
+        !((Instruction->getOpcode() == llvm::Instruction::Add ||
+           Instruction->getOpcode() == llvm::Instruction::Sub ||
+           Instruction->getOpcode() == llvm::Instruction::Mul ||
+           Instruction->getOpcode() == llvm::Instruction::Shl) &&
+          !Instruction->hasMetadataOtherThanDebugLoc()) &&
+        !((Instruction->getOpcode() == llvm::Instruction::UDiv ||
+           Instruction->getOpcode() == llvm::Instruction::SDiv ||
+           Instruction->getOpcode() == llvm::Instruction::LShr ||
+           Instruction->getOpcode() == llvm::Instruction::AShr) &&
+          !Instruction->hasMetadataOtherThanDebugLoc()) &&
         !(llvm::isa<llvm::GetElementPtrInst>(Instruction) &&
           supportedGEPNoWrap(
               *llvm::cast<llvm::GetElementPtrInst>(Instruction)))) {

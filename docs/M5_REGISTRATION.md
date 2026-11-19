@@ -83,6 +83,17 @@ replay binary has no automatic identity proof against arbitrary analyzed IR;
 its result requires a corresponding build provenance check.
 
 `result.json` schema version 1 has deterministic keys and ordered arrays.
+For a closed error witness, `counterexample.json` records `semantic_kind`
+(`LLVM_UB` for supported immediate LLVM UB, otherwise `PROPERTY_ERROR`) and
+`replay_class`. The current exporter sets `replay_class` to `IR_ONLY`: concrete
+input bytes and an LLVM error path are available, but native sanitizer replay
+is not established by that artifact alone. The witness also contains `source`,
+`call_stack`, `detail`, `path_constraints_smt2`, and
+`trigger_condition_smt2`; the SMT fields preserve the feasible path and final
+UB guard. The `reason` key identifies the UB
+kind (`LLVM-UB-DIVIDE-BY-ZERO`, `LLVM-UB-SDIV-OVERFLOW`,
+`LLVM-UB-SREM-OVERFLOW`, or `LLVM-UB-POISON-CONSUMED`) or the ordinary
+property error.
 `descriptors` lists `(kind, name, size, ordinal)` with one normal path's
 object ID, byte offset, registration source location, path guards, and byte
 symbols. `paths[].registrations` retains bindings for each path, including

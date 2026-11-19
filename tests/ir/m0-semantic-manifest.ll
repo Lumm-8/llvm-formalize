@@ -4,15 +4,15 @@
 ; RUN: rm -rf %t.fp && %not %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=fp_entry -formal-output-dir=%t.fp %s -disable-output 2>&1 | %FileCheck %s --check-prefix=FP
 ; RUN: rm -rf %t.vector && %not %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=fixed_vector_entry -formal-output-dir=%t.vector %s -disable-output 2>&1 | %FileCheck %s --check-prefix=VECTOR
 ; RUN: rm -rf %t.freeze && %not %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=freeze_entry -formal-output-dir=%t.freeze %s -disable-output 2>&1 | %FileCheck %s --check-prefix=FREEZE
-; RUN: rm -rf %t.flags && %not %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=flagged_entry -formal-output-dir=%t.flags %s -disable-output 2>&1 | %FileCheck %s --check-prefix=FLAGS
-; RUN: rm -rf %t.poison && %not %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=poison_entry -formal-output-dir=%t.poison %s -disable-output 2>&1 | %FileCheck %s --check-prefix=POISON
+; RUN: rm -rf %t.flags && %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=flagged_entry -formal-output-dir=%t.flags %s -disable-output 2>&1 | %FileCheck %s --check-prefix=FLAGS
+; RUN: rm -rf %t.poison && %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=poison_entry -formal-output-dir=%t.poison %s -disable-output 2>&1 | %FileCheck %s --check-prefix=POISON
 ; RUN: rm -rf %t.disjoint && %not %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=disjoint_entry -formal-output-dir=%t.disjoint %s -disable-output 2>&1 | %FileCheck %s --check-prefix=DISJOINT
 ; RUN: rm -rf %t.samesign && %not %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=samesign_entry -formal-output-dir=%t.samesign %s -disable-output 2>&1 | %FileCheck %s --check-prefix=SAMESIGN
 ; RUN: rm -rf %t.nneg && %not %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=nneg_entry -formal-output-dir=%t.nneg %s -disable-output 2>&1 | %FileCheck %s --check-prefix=NNEG
 ; RUN: rm -rf %t.gepflags && %not %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=gep_flags_entry -formal-output-dir=%t.gepflags %s -disable-output 2>&1 | %FileCheck %s --check-prefix=GEPFLAGS
-; RUN: rm -rf %t.exact && %not %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=exact_entry -formal-output-dir=%t.exact %s -disable-output 2>&1 | %FileCheck %s --check-prefix=EXACT
-; RUN: rm -rf %t.nuw && %not %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=nuw_entry -formal-output-dir=%t.nuw %s -disable-output 2>&1 | %FileCheck %s --check-prefix=NUW
-; RUN: rm -rf %t.inbounds && %not %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=inbounds_entry -formal-output-dir=%t.inbounds %s -disable-output 2>&1 | %FileCheck %s --check-prefix=INBOUNDS
+; RUN: rm -rf %t.exact && %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=exact_entry -formal-output-dir=%t.exact %s -disable-output 2>&1 | %FileCheck %s --check-prefix=EXACT
+; RUN: rm -rf %t.nuw && %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=nuw_entry -formal-output-dir=%t.nuw %s -disable-output 2>&1 | %FileCheck %s --check-prefix=NUW
+; RUN: rm -rf %t.inbounds && %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=inbounds_entry -formal-output-dir=%t.inbounds %s -disable-output 2>&1 | %FileCheck %s --check-prefix=INBOUNDS
 ; RUN: rm -rf %t.poisonmd && %not %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=poison_metadata_entry -formal-output-dir=%t.poisonmd %s -disable-output 2>&1 | %FileCheck %s --check-prefix=POISONMD
 ; RUN: rm -rf %t.retattr && %not %opt -load-pass-plugin=%plugin -passes=formal-exec -formal-entry=return_attribute_entry -formal-output-dir=%t.retattr %s -disable-output 2>&1 | %FileCheck %s --check-prefix=RETATTR
 
@@ -24,15 +24,15 @@
 ; FP: UNKNOWN [FLOATING_POINT]
 ; VECTOR: UNKNOWN [FIXED_VECTOR]
 ; FREEZE: UNKNOWN [FREEZE_INSTRUCTION]
-; FLAGS: UNKNOWN [UNSUPPORTED_VALUE_SEMANTICS]
-; POISON: UNKNOWN [UNSUPPORTED_VALUE_SEMANTICS]
+; FLAGS: preflight validated
+; POISON: preflight validated
 ; DISJOINT: UNKNOWN [UNSUPPORTED_VALUE_SEMANTICS]
 ; SAMESIGN: UNKNOWN [UNSUPPORTED_VALUE_SEMANTICS]
 ; NNEG: UNKNOWN [UNSUPPORTED_VALUE_SEMANTICS]
 ; GEPFLAGS: UNKNOWN [UNSUPPORTED_VALUE_SEMANTICS]
-; EXACT: UNKNOWN [UNSUPPORTED_VALUE_SEMANTICS]
-; NUW: UNKNOWN [UNSUPPORTED_VALUE_SEMANTICS]
-; INBOUNDS: UNKNOWN [UNSUPPORTED_VALUE_SEMANTICS]
+; EXACT: preflight validated
+; NUW: preflight validated
+; INBOUNDS: preflight validated
 ; POISONMD: UNKNOWN [UNSUPPORTED_VALUE_SEMANTICS]
 ; RETATTR: UNKNOWN [UNSUPPORTED_VALUE_SEMANTICS]
 

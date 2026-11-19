@@ -72,6 +72,10 @@ enum class PathStatus { Completed, Incomplete, Error, InternalError };
 enum class ExecutionStatus { Complete, Unknown, Error, InternalError };
 enum class PathErrorReason {
   None,
+  DivisionByZero,
+  SignedDivisionOverflow,
+  SignedRemainderOverflow,
+  PoisonConsumed,
   ReachedUnreachable,
   NoreturnViolation,
   AbortCalled,

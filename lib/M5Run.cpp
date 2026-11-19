@@ -31,6 +31,15 @@ M5Analysis analyzeM5(llvm::Function &Entry, ExprContext &Expressions,
   } else if (Analysis.Execution.Status == ExecutionStatus::Error &&
              Analysis.CounterexampleJSON) {
     Analysis.Verdict = "UNSAFE";
+    for (const PathResult &Path : Analysis.Execution.Paths)
+      if (hasClosedRegisteredErrorPath(Path)) {
+        if (Path.ErrorReason == PathErrorReason::DivisionByZero ||
+            Path.ErrorReason == PathErrorReason::SignedDivisionOverflow ||
+            Path.ErrorReason == PathErrorReason::SignedRemainderOverflow ||
+            Path.ErrorReason == PathErrorReason::PoisonConsumed)
+          Analysis.Verdict = "UNSAFE-UB";
+        break;
+      }
   } else if (Analysis.Execution.HasUnwindingAssumption &&
              Analysis.Execution.Status == ExecutionStatus::Unknown &&
              std::all_of(Analysis.Execution.Paths.begin(),
@@ -47,7 +56,7 @@ M5Analysis analyzeM5(llvm::Function &Entry, ExprContext &Expressions,
   } else {
     Analysis.Verdict = "UNKNOWN";
   }
-  if (Analysis.Verdict == "UNSAFE") {
+  if (Analysis.Verdict == "UNSAFE" || Analysis.Verdict == "UNSAFE-UB") {
     for (const PathResult &Path : Analysis.Execution.Paths)
       if (hasClosedRegisteredErrorPath(Path)) {
         Analysis.Reason = toReasonCode(Path.ErrorReason);

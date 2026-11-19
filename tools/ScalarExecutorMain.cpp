@@ -54,6 +54,12 @@ bool parseUnsigned(const std::string &Text, std::uint64_t &Value) {
 }
 
 std::string valueText(const formal::SymbolicValue &Value) {
+  if (Value.poisonCondition()) {
+    if (Value.poisonCondition()->isConstant() &&
+        !Value.poisonCondition()->constantValue().isZero())
+      return "poison";
+    return "bv" + std::to_string(Value.width()) + ":conditional-poison";
+  }
   if (!Value.bitVector()->isConstant())
     return "bv" + std::to_string(Value.width()) + ":symbolic";
   llvm::SmallString<64> Text;
@@ -382,7 +388,7 @@ int main(int argc, char **argv) {
   if (EnableRegistration) {
     if (Analysis.Verdict == "INTERNAL_ERROR")
       return 4;
-    if (Analysis.Verdict == "UNSAFE")
+    if (Analysis.Verdict == "UNSAFE" || Analysis.Verdict == "UNSAFE-UB")
       return 1;
     if (Analysis.Verdict == "INVALID_TASK")
       return 3;

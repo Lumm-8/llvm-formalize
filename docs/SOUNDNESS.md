@@ -377,12 +377,12 @@ successor is reported UNSAT, the executor records an invariant failure rather
 than silently discarding the state.
 
 Unflagged integer operations have ordinary fixed-width semantics only on their
-LLVM-defined domain. Division/remainder nonzero, signed-division overflow and
-shift range are split into defined and undefined guards with solver queries;
-the feasible undefined side is an incomplete path with a precise reason. M3
-does not yet propagate poison, so `nsw`, `nuw`, `exact`, other poison-producing
-annotations, explicit poison/undef and `freeze` stop the affected path as
-UNKNOWN. Reaching `unreachable` on a feasible path is a distinct path error.
+LLVM-defined domain. Division/remainder by zero and signed-division overflow
+split immediate UB paths from defined paths. M9 adds conditional scalar poison
+for supported wrap/exact flags, overshifts, and poison constants; unsupported
+annotations, scalar undef outside direct supported freeze, and freeze wider
+than i8 remain UNKNOWN.
+Reaching `unreachable` on a feasible path is a distinct path error.
 Natural loops are explored up to the configured IR backedge bound per dynamic
 call-frame activation. The count advances only on a traversed latch-to-header
 edge, before the successor enters the header. A disallowed edge is incomplete
@@ -560,3 +560,72 @@ Name uniqueness is per kind, so an in-place input/output pair may share a
 name. M7 adds Heap and C++ New object kinds; registration still requires a live
 resolved object slice. See [M5_REGISTRATION.md](M5_REGISTRATION.md) for the
 exact JSON and SMT contract.
+
+## M9 special value boundary
+
+The pinned LLVM revision is `eccf4d44d346eee498b0ff709e625e3104448751`
+(LLVM/Clang 20.0.0git). Its `llvm/docs` tree contains the relevant undef,
+poison, freeze, arithmetic, GEP, and lifetime rules in `LangRef.rst`; it does
+not contain a separate `UndefinedBehavior.rst`. The checked IR target is
+`x86_64-unknown-linux-gnu` with
+`e-p:64:64-i64:64-n8:16:32:64-S128`. STP is pinned at 2.3.3.
+
+`SymbolicValue` holds a scalar expression, pointer candidates, or aggregate
+bytes, plus an optional Boolean poison condition for scalar values. A constant
+false condition is normalized away. Integer `add/sub/mul/shl` wrap flags,
+`udiv/sdiv/lshr/ashr exact`, overshifts, and scalar poison constants create
+that condition; arithmetic, integer comparisons, casts, select, and PHI
+propagate it. Branch, switch, `noundef` return, and scalar `noundef` arguments
+of supported direct defined calls query it as an LLVM UB sink.
+An unused poison result does not itself create UB. A chosen select arm alone
+contributes arm poison; PHI reads only the actual predecessor. The normal and
+UB sides of a symbolic poison condition retain separate constraints and paths.
+
+`ObjectState` still has byte initialization masks but no poison mask. Storing
+a possibly poison scalar or using one as a GEP index returns UNKNOWN. Scalar
+poison arguments of supported direct defined calls retain their condition;
+other call forms with poison operands return UNKNOWN. Direct scalar
+`freeze undef/poison` through i8 enumerates the complete value domain. A
+conditional scalar poison predicate first splits defined and poison inputs;
+the defined side retains its payload and the poison side enumerates all values.
+Each successor binds a stable, non-poison SSA result. Re-entering the same static
+freeze in a loop or recursive call creates fresh choices by forking again.
+The state limit returns UNKNOWN before an incomplete enumeration. Wider or
+pointer/aggregate poison, and unmodeled consumers
+remain gated. This is not complete conditional poison propagation across
+memory or per-use undef. Freeze of a proved defined value binds the same SSA
+payload and is exact under
+the pinned LangRef; `tests/ir/m9/langref.ll` covers reuse of that value. Supported
+integer division and remainder UB split feasible normal and UB paths, and a
+closed UB witness has an `LLVM-UB-*` reason and `UNSAFE-UB` verdict. Plain
+instruction `inbounds` GEP is accepted only for the checked object and index
+subset; unproved bounds or wrap return UNKNOWN. Full-object stack lifetime is
+modeled with M7's existing `ObjectState::Live` and initialization masks;
+unresolved or partial regions return UNKNOWN.
+
+The hand-written tests are `tests/ir/m9/langref.ll`,
+`tests/ir/m7/lifetime.ll`, and `tests/ir/m3/unknown.ll`. The M9 driver and
+artifact tests check UB kind, model bytes, the coexistence of a normal and UB
+path for symbolic division and `add nsw`, and absence of a counterexample for
+UNKNOWN. `FormalExecutor.M9.SmallWidthFlags` exhaustively compares 128 i2
+add/sub/mul/shl nsw/nuw cases and 64 i2 exact division/shift cases against
+concrete arithmetic.
+`counterexample.json` labels each exported witness `LLVM_UB` or
+`PROPERTY_ERROR` and `IR_ONLY`, and includes the IR source, dynamic call
+stack, path SMT, and final trigger guard. Native replay requires separate
+evidence.
+Alive2 was unavailable in this environment, so no Alive2 differential result
+is claimed.
+
+After the conditional scalar `freeze` expansion, the full CTest run passed
+74/74 in each of Debug, Release, and ASan/UBSan/LSan builds. The sanitizer run used an unsandboxed
+process because LSan cannot initialize under the sandbox's ptrace setup.
+The M9 driver reparses the symbolic `noundef` call UB path with the pinned
+STP binary and checks SAT. It also proves the conditional i1 `freeze`
+input/output relation equivalent to the pinned LangRef truth table by asking
+STP for a satisfying XOR and requiring UNSAT. The full runs include
+the configured Z3 cross-check, relation closure and SMT simplification tests,
+and M0–M8 regressions. A repeated M9 symbolic-call run produced byte-identical
+counterexample JSON and relation SMT. These checks do not cover the gated
+undef outside the direct small-freeze subset, wide freeze, or
+byte-memory poison semantics.
