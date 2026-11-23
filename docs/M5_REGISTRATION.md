@@ -83,6 +83,11 @@ replay binary has no automatic identity proof against arbitrary analyzed IR;
 its result requires a corresponding build provenance check.
 
 `result.json` schema version 1 has deterministic keys and ordered arrays.
+When `formal-check` stops at an unsupported preflight feature, it writes a
+schema-version-1 `M0_PREFLIGHT` result with `status: UNKNOWN`, the preflight
+`reason`, `message`, `entry`, and pinned LLVM identity. No M5 relation is
+exported because execution has not started. Malformed IR and other invalid
+tasks still exit before publishing an M5 result.
 For a closed error witness, `counterexample.json` records `semantic_kind`
 (`LLVM_UB` for supported immediate LLVM UB, otherwise `PROPERTY_ERROR`) and
 `replay_class`. The current exporter sets `replay_class` to `IR_ONLY`: concrete

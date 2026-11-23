@@ -41,6 +41,7 @@ enum class IncompletenessReason {
   WallTimeLimit,
   SolverQueryLimit,
   InstructionLimit,
+  ExpressionWidthLimit,
   CallDepthLimit,
   StateLimit,
   SolverTimeout,

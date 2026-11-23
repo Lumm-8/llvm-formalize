@@ -2262,6 +2262,24 @@ struct ScalarExecutor::Impl {
     ExprRef L = Left->bitVector();
     ExprRef R = Right.bitVector();
     const unsigned Width = Left->width();
+    const auto *Flags = llvm::dyn_cast<llvm::OverflowingBinaryOperator>(&Binary);
+    const bool CheckWrap =
+        Flags && (Flags->hasNoSignedWrap() || Flags->hasNoUnsignedWrap());
+    unsigned WideWidth = Width;
+    if (CheckWrap) {
+      const unsigned ExtraWidth =
+          Binary.getOpcode() == llvm::Instruction::Mul ||
+                  Binary.getOpcode() == llvm::Instruction::Shl
+              ? Width
+              : 1;
+      const unsigned Limit = Expressions.maxBitWidth();
+      if (Width > Limit || ExtraWidth > Limit - Width) {
+        incomplete(State, IncompletenessReason::ExpressionWidthLimit,
+                   "nsw/nuw check exceeds the expression bit width limit");
+        return;
+      }
+      WideWidth += ExtraWidth;
+    }
 
     try {
       if ((Binary.getOpcode() == llvm::Instruction::UDiv ||
@@ -2390,12 +2408,7 @@ struct ScalarExecutor::Impl {
         if (Violation)
           Poison = poisonOr(Poison, Violation);
       }
-      if (const auto *Flags =
-              llvm::dyn_cast<llvm::OverflowingBinaryOperator>(&Binary);
-          Flags && (Flags->hasNoSignedWrap() || Flags->hasNoUnsignedWrap())) {
-        const bool Multiply = Binary.getOpcode() == llvm::Instruction::Mul;
-        const bool Shift = Binary.getOpcode() == llvm::Instruction::Shl;
-        const unsigned WideWidth = (Multiply || Shift) ? Width * 2 : Width + 1;
+      if (CheckWrap) {
         auto WideResult = [&](bool Signed) {
           ExprRef A = Signed ? Expressions.sext(L, WideWidth)
                              : Expressions.zext(L, WideWidth);
@@ -2765,16 +2778,8 @@ struct ScalarExecutor::Impl {
         const llvm::Value *Underlying =
             llvm::getUnderlyingObject(Intrinsic->getArgOperand(1));
         if (Underlying == &Alloca) {
-          const auto *LifetimeSize =
-              llvm::dyn_cast<llvm::ConstantInt>(Intrinsic->getArgOperand(0));
-          if (!LifetimeSize ||
-              (!LifetimeSize->getValue().isAllOnes() &&
-               LifetimeSize->getZExtValue() != Total)) {
-            incomplete(State,
-                       IncompletenessReason::UnsupportedMemoryInstruction,
-                       "lifetime.start size does not match its stack object");
-            return;
-          }
+          // The size operand is descriptive. The pinned LangRef defines the
+          // lifetime effect by the pointer to the first byte of the object.
           const llvm::Value *Pointer = Intrinsic->getArgOperand(1);
           while (Pointer != &Alloca) {
             Pointer = Pointer->stripPointerCasts();
@@ -5372,15 +5377,12 @@ struct ScalarExecutor::Impl {
                  "unsupported stack lifetime intrinsic signature");
       return;
     }
-    auto SizeValue = resolve(Call.getArgOperand(0), State);
     auto Pointer = resolve(Call.getArgOperand(1), State);
-    if (!SizeValue || !Pointer)
+    if (!Pointer)
       return;
-    auto Size = concreteUnsigned(SizeValue->bitVector());
-    if (!Size || !Pointer->isPointer() ||
-        Pointer->pointer().Candidates.size() != 1) {
+    if (!Pointer->isPointer() || Pointer->pointer().Candidates.size() != 1) {
       incomplete(State, IncompletenessReason::UnsupportedMemoryInstruction,
-                 "stack lifetime needs one concrete full-object region");
+                 "stack lifetime needs one resolved object pointer");
       return;
     }
     const PointerCandidate &Candidate = Pointer->pointer().Candidates.front();
@@ -5390,11 +5392,9 @@ struct ScalarExecutor::Impl {
         !Candidate.Offset->isConstant() ||
         !Candidate.Offset->constantValue().isZero() ||
         Candidate.Object->Kind != AllocationKind::Stack ||
-        Candidate.Object->OwnerFrameId != State.frame().id() ||
-        (*Size != Candidate.Object->Size &&
-         *Size != std::numeric_limits<std::uint64_t>::max())) {
+        Candidate.Object->OwnerFrameId != State.frame().id()) {
       incomplete(State, IncompletenessReason::UnsupportedMemoryInstruction,
-                 "partial or ambiguous stack lifetime is unsupported");
+                 "non-base or ambiguous stack lifetime is unsupported");
       return;
     }
     const auto *Entry = State.addressSpace().find(Candidate.Object->Id);

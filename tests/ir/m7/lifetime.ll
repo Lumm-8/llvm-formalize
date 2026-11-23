@@ -8,6 +8,7 @@
 ; RUN: %scalar-executor %s --m4 --entry zero_size_start | %FileCheck %s --check-prefix=ZEROSTART
 ; RUN: %scalar-executor %s --m4 --entry zero_size_end | %FileCheck %s --check-prefix=ZEROEND
 ; RUN: %scalar-executor %s --m4 --entry mismatched_start_before_access | %FileCheck %s --check-prefix=MISMATCH
+; RUN: %scalar-executor %s --m4 --entry mismatched_end_access | %FileCheck %s --check-prefix=MISMATCHEND
 ; RUN: %scalar-executor %s --m4 --entry repeated_start_poison | %FileCheck %s --check-prefix=RESTART
 
 target datalayout = "e-p:64:64-i64:64-n8:16:32:64-S128"
@@ -80,8 +81,9 @@ define i8 @zero_size_start() {
   %v = load i8, ptr %p, align 1
   ret i8 %v
 }
-; ZEROSTART: M4 status UNKNOWN
-; ZEROSTART: reason=UNKNOWN-UNSUPPORTED-MEMORY-INSTRUCTION
+; Pinned LangRef lifetime.start: the operational effect names the object by ptr.
+; ZEROSTART: M4 status M4_EXECUTOR_COMPLETE
+; ZEROSTART: return=bv8:7
 
 define i8 @zero_size_end() {
   %p = alloca i8, align 1
@@ -90,8 +92,9 @@ define i8 @zero_size_end() {
   %v = load i8, ptr %p, align 1
   ret i8 %v
 }
-; ZEROEND: M4 status UNKNOWN
-; ZEROEND: reason=UNKNOWN-UNSUPPORTED-MEMORY-INSTRUCTION
+; Pinned LangRef lifetime.end: size does not alter the named object's lifetime.
+; ZEROEND: M4 status ERROR
+; ZEROEND: reason=DEAD_OBJECT_ACCESS
 
 define void @mismatched_start_before_access() {
   %p = alloca i8, align 1
@@ -99,8 +102,18 @@ define void @mismatched_start_before_access() {
   call void @llvm.lifetime.start.p0(i64 0, ptr %p)
   ret void
 }
-; MISMATCH: M4 status UNKNOWN
-; MISMATCH: reason=UNKNOWN-UNSUPPORTED-MEMORY-INSTRUCTION
+; MISMATCH: M4 status ERROR
+; MISMATCH: reason=DEAD_OBJECT_ACCESS
+
+define i8 @mismatched_end_access() {
+  %p = alloca i8, align 1
+  store i8 9, ptr %p, align 1
+  call void @llvm.lifetime.end.p0(i64 999, ptr %p)
+  %v = load i8, ptr %p, align 1
+  ret i8 %v
+}
+; MISMATCHEND: M4 status ERROR
+; MISMATCHEND: reason=DEAD_OBJECT_ACCESS
 
 define i8 @repeated_start_poison() {
   %p = alloca i8, align 1

@@ -19,6 +19,8 @@ def main():
     cases = (
         ("defined_freeze", "SAFE", 0),
         ("one_past", "SAFE", 0),
+        ("one_past_load", "UNSAFE", 1),
+        ("one_past_store", "UNSAFE", 1),
         ("past_end", "UNKNOWN", 2),
         ("wide_index", "UNKNOWN", 2),
         ("outside_reenter", "UNKNOWN", 2),
@@ -51,6 +53,11 @@ def main():
         ("frozen_store", "SAFE", 0),
         ("frozen_wide", "UNKNOWN", 2),
         ("frozen_conditional", "SAFE", 0),
+        ("width_add_over_limit", "UNKNOWN", 2),
+        ("width_sub_over_limit", "UNKNOWN", 2),
+        ("width_mul_over_limit", "UNKNOWN", 2),
+        ("width_shl_over_limit", "UNKNOWN", 2),
+        ("width_at_limit", "SAFE", 0),
     )
     preflight_unknown = {
         "undef_store": "UNSUPPORTED_VALUE_SEMANTICS",
@@ -71,10 +78,33 @@ def main():
             if entry in preflight_unknown:
                 assert ("preflight " + preflight_unknown[entry]
                         in process.stderr), (entry, process.stderr)
-                assert not (directory / "result.json").exists(), entry
+                report = json.loads((directory / "result.json").read_text())
+                assert report["schema_version"] == 1, (entry, report)
+                assert report["phase"] == "M0_PREFLIGHT", (entry, report)
+                assert report["status"] == "UNKNOWN", (entry, report)
+                assert report["reason"] == preflight_unknown[entry], (
+                    entry, report)
+                assert report["entry"] == entry, (entry, report)
                 continue
             report = json.loads((directory / "result.json").read_text())
             assert report["status"] == verdict, (entry, report)
+            if entry.endswith("_over_limit"):
+                assert report["relation_completeness"] == "UNDER_APPROXIMATION", report
+                assert report["incompleteness_reasons"] == {
+                    "UNKNOWN-EXPRESSION-WIDTH-LIMIT": 1
+                }, report
+                assert report["path_counts"]["internal_error"] == 0, report
+                assert report["paths"][0]["source"]["opcode"] == entry.split("_")[1], report
+            if entry in ("one_past_load", "one_past_store"):
+                assert report["reason"] == "OUT_OF_BOUNDS", report
+                witness = json.loads(
+                    (directory / "counterexample.json").read_text())
+                assert witness["reason"] == "OUT_OF_BOUNDS", witness
+                assert witness["semantic_kind"] == "PROPERTY_ERROR", witness
+                opcode = entry.removeprefix("one_past_")
+                assert witness["source"]["opcode"] == opcode, witness
+                assert report["path_counts"]["error"] == 1, report
+                continue
             if entry == "defined_freeze":
                 assert report["relation_completeness"] == "COMPLETE", report
                 relation = (directory / "relation.smt2").read_text()

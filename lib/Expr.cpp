@@ -701,6 +701,10 @@ ExprRef ExprContext::trunc(ExprRef Value, unsigned Width) {
                 0, {std::move(Value)});
 }
 
+unsigned ExprContext::maxBitWidth() const noexcept {
+  return Implementation->Options.MaxBitWidth;
+}
+
 std::size_t ExprContext::nodeCount() const noexcept {
   return Implementation->Nodes.size();
 }

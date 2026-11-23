@@ -14,6 +14,8 @@
 ; RUN: %not %scalar-executor %s --m5 --entry width_i24_nsw --output-dir %t.i24 | %FileCheck %s --check-prefix=I24NSW
 ; RUN: %not %scalar-executor %s --m5 --entry width_i64_nsw --output-dir %t.i64 | %FileCheck %s --check-prefix=I64NSW
 ; RUN: %not %scalar-executor %s --m5 --entry width_i128_nsw --output-dir %t.i128 | %FileCheck %s --check-prefix=I128NSW
+; RUN: %not %scalar-executor %s --m5 --entry width_add_over_limit --output-dir %t.addlimit | %FileCheck %s --check-prefix=ADDLIMIT
+; RUN: %not %scalar-executor %s --m5 --entry width_mul_over_limit --output-dir %t.mullimit | %FileCheck %s --check-prefix=MULLIMIT
 ; RUN: %scalar-executor %s --m5 --entry unselected_poison_select --output-dir %t.selectok | %FileCheck %s --check-prefix=SELECTOK
 ; RUN: %scalar-executor %s --m5 --entry unselected_poison_phi --output-dir %t.phiok | %FileCheck %s --check-prefix=PHIOK
 ; RUN: %scalar-executor %s --m5 --entry exact_div --output-dir %t.exact | %FileCheck %s --check-prefix=EXACT
@@ -43,6 +45,8 @@
 ; RUN: %not %scalar-executor %s --m5 --entry frozen_conditional --max-solver-queries 0 --output-dir %t.freezequery | %FileCheck %s --check-prefix=FREEZEQUERY
 ; RUN: %scalar-executor %s --m5 --entry defined_freeze --output-dir %t.definedfreeze | %FileCheck %s --check-prefix=DEFINEDFREEZE
 ; RUN: %scalar-executor %s --m5 --entry one_past --output-dir %t.onepast | %FileCheck %s --check-prefix=ONEPAST
+; RUN: %not %scalar-executor %s --m5 --entry one_past_load --output-dir %t.onepastload | %FileCheck %s --check-prefix=ONEPASTLOAD
+; RUN: %not %scalar-executor %s --m5 --entry one_past_store --output-dir %t.onepaststore | %FileCheck %s --check-prefix=ONEPASTSTORE
 ; RUN: %not %scalar-executor %s --m5 --entry past_end --output-dir %t.past | %FileCheck %s --check-prefix=PAST
 ; RUN: %not %scalar-executor %s --m5 --entry wide_index --output-dir %t.wide | %FileCheck %s --check-prefix=WIDE
 ; RUN: %not %scalar-executor %s --m5 --entry outside_reenter --output-dir %t.reenter | %FileCheck %s --check-prefix=REENTER
@@ -532,6 +536,26 @@ done:
 }
 ; ONEPAST: M5 status SAFE
 
+; LangRef permits one-past construction, but no byte of the object is
+; accessible at that address.
+define void @one_past_load() {
+  %p = alloca [1 x i8], align 1
+  %q = getelementptr inbounds [1 x i8], ptr %p, i64 0, i64 1
+  %v = load i8, ptr %q, align 1
+  ret void
+}
+; ONEPASTLOAD: M5 status UNSAFE
+; ONEPASTLOAD: reason=OUT_OF_BOUNDS {{.*}}location={{.*}}:load#
+
+define void @one_past_store() {
+  %p = alloca [1 x i8], align 1
+  %q = getelementptr inbounds [1 x i8], ptr %p, i64 0, i64 1
+  store i8 7, ptr %q, align 1
+  ret void
+}
+; ONEPASTSTORE: M5 status UNSAFE
+; ONEPASTSTORE: reason=OUT_OF_BOUNDS {{.*}}location={{.*}}:store#
+
 define void @past_end() {
   %p = alloca [1 x i8], align 1
   %q = getelementptr inbounds [1 x i8], ptr %p, i64 0, i64 2
@@ -556,3 +580,38 @@ define void @outside_reenter() {
 }
 ; REENTER: M5 status UNKNOWN
 ; REENTER: reason=UNKNOWN-INBOUNDS-GEP
+
+; The source types are valid. The internal nsw/nuw checks need one extra
+; bit for add/sub and twice the source width for mul/shl.
+define void @width_add_over_limit() {
+  %r = add nsw i1048576 1, 2
+  ret void
+}
+; ADDLIMIT: M5 status UNKNOWN
+; ADDLIMIT: reason=UNKNOWN-EXPRESSION-WIDTH-LIMIT
+
+define void @width_sub_over_limit() {
+  %r = sub nuw i1048576 2, 1
+  ret void
+}
+
+define void @width_mul_over_limit() {
+  %r = mul nsw nuw i524289 2, 3
+  ret void
+}
+; MULLIMIT: M5 status UNKNOWN
+; MULLIMIT: reason=UNKNOWN-EXPRESSION-WIDTH-LIMIT
+
+define void @width_shl_over_limit() {
+  %r = shl nsw nuw i524289 1, 1
+  ret void
+}
+
+define void @width_at_limit() {
+  %a = add nsw i1048575 1, 2
+  %b = sub nuw i1048575 2, 1
+  %c = mul nsw nuw i524288 2, 3
+  %d = shl nsw nuw i524288 1, 1
+  %e = add i1048576 1, 2
+  ret void
+}

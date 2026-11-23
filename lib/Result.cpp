@@ -60,6 +60,8 @@ const char *toReasonCode(IncompletenessReason Reason) noexcept {
     return "UNKNOWN-SOLVER-QUERY-LIMIT";
   case IncompletenessReason::InstructionLimit:
     return "UNKNOWN-INSTRUCTION-LIMIT";
+  case IncompletenessReason::ExpressionWidthLimit:
+    return "UNKNOWN-EXPRESSION-WIDTH-LIMIT";
   case IncompletenessReason::CallDepthLimit:
     return "UNKNOWN-CALL-DEPTH";
   case IncompletenessReason::StateLimit:

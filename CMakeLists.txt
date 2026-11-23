@@ -442,13 +442,39 @@ if(FORMAL_BUILD_TESTS)
       LABELS "m9;driver;preflight;ub")
     formal_set_sanitizer_test_environment(FormalExecutor.M9.Driver)
     formal_set_stp_test_environment(FormalExecutor.M9.Driver)
+    add_executable(FormalM9FlagOracle tests/M9FlagOracle.cpp)
+    target_link_libraries(FormalM9FlagOracle PRIVATE FormalLLVMSupport)
+    formal_enable_sanitizers(FormalM9FlagOracle)
+    formal_enable_project_warnings(FormalM9FlagOracle)
     add_test(NAME FormalExecutor.M9.SmallWidthFlags
       COMMAND ${FORMAL_PYTHON3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_m9_flags.py
-        --scalar-executor $<TARGET_FILE:FormalScalarExecutor>)
+        --scalar-executor $<TARGET_FILE:FormalScalarExecutor>
+        --apint-oracle $<TARGET_FILE:FormalM9FlagOracle>)
     set_tests_properties(FormalExecutor.M9.SmallWidthFlags PROPERTIES
       LABELS "m9;flags;exhaustive;ub")
     formal_set_sanitizer_test_environment(FormalExecutor.M9.SmallWidthFlags)
+    add_test(NAME FormalExecutor.M9.WideFlags
+      COMMAND ${FORMAL_PYTHON3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_m9_flags.py
+        --scalar-executor $<TARGET_FILE:FormalScalarExecutor>
+        --apint-oracle $<TARGET_FILE:FormalM9FlagOracle>
+        --opt ${FORMAL_PINNED_OPT_EXECUTABLE}
+        --wide)
+    set_tests_properties(FormalExecutor.M9.WideFlags PROPERTIES
+      LABELS "m9;flags;differential;ub")
+    formal_set_sanitizer_test_environment(FormalExecutor.M9.WideFlags)
+    if(FORMAL_ENABLE_ALIVE2_TESTS)
+      find_program(FORMAL_ALIVE_TV_EXECUTABLE NAMES alive-tv REQUIRED)
+      add_test(NAME FormalExecutor.M9.Alive2
+        COMMAND ${FORMAL_ALIVE_TV_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/alive2/m9-wide-flags.ll)
+      set_tests_properties(FormalExecutor.M9.Alive2 PROPERTIES
+        LABELS "m9;alive2;differential"
+        TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "Transformation seems to be correct!"
+        FAIL_REGULAR_EXPRESSION "ERROR:;Transformation doesn't verify!")
+    endif()
     add_test(NAME FormalExecutor.M7.HeapEvents
       COMMAND ${FORMAL_PYTHON3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_m7_heap_events.py
@@ -745,6 +771,16 @@ if(FORMAL_BUILD_TESTS)
         LABELS "m2;differential;z3;stp")
       formal_set_sanitizer_test_environment(FormalSolver.Cross.Z3)
       formal_set_stp_test_environment(FormalSolver.Cross.Z3)
+      add_test(NAME FormalExecutor.M9.SymbolicFlags
+        COMMAND ${FORMAL_PYTHON3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_m9_symbolic_flags.py
+          --formal-check $<TARGET_FILE:formal-check>
+          --ir ${CMAKE_CURRENT_SOURCE_DIR}/tests/ir/m9/symbolic-flags.ll
+          --z3 ${FORMAL_Z3_EXECUTABLE}
+          --output-dir ${CMAKE_CURRENT_BINARY_DIR}/m9-symbolic-flags)
+      set_tests_properties(FormalExecutor.M9.SymbolicFlags PROPERTIES
+        LABELS "m9;flags;differential;z3;ub")
+      formal_set_sanitizer_test_environment(FormalExecutor.M9.SymbolicFlags)
     elseif(FORMAL_REQUIRE_Z3_TEST_ORACLE)
       message(FATAL_ERROR
         "FORMAL_REQUIRE_Z3_TEST_ORACLE requires a runnable z3 executable")

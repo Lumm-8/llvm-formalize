@@ -134,7 +134,7 @@ that ordinary Clang `-O0` output is supported.
 | Unsupported value/IR | `UNKNOWN-UNSUPPORTED-CONSTANT`, `UNKNOWN-UNSUPPORTED-CAST`, `UNKNOWN-UNSUPPORTED-MEMORY-INSTRUCTION`, `UNKNOWN-UNSUPPORTED-CALL`, `UNKNOWN-UNSUPPORTED-EXCEPTION-INSTRUCTION`, `UNKNOWN-UNSUPPORTED-ATOMIC-INSTRUCTION`, `UNKNOWN-UNSUPPORTED-FLOATING-POINT`, `UNKNOWN-UNSUPPORTED-VECTOR`, `UNKNOWN-UNSUPPORTED-AGGREGATE`, `UNKNOWN-UNSUPPORTED-INSTRUCTION`, `UNKNOWN-UNSUPPORTED-TYPE` |
 | Undefined/special semantics | `UNKNOWN-UNDEF`, `UNKNOWN-POISON`, `UNKNOWN-FREEZE`, `UNKNOWN-NSW-NUW`, `UNKNOWN-EXACT`, `UNKNOWN-POISON-ANNOTATION`, `UNKNOWN-OVERSHIFT` |
 | Feasible LLVM immediate UB | `LLVM-UB-DIVIDE-BY-ZERO`, `LLVM-UB-SDIV-OVERFLOW`, `LLVM-UB-SREM-OVERFLOW`; M5 reports `UNSAFE-UB` when the witness is closed over registered inputs |
-| Completeness/resource | `UNKNOWN-LOOP-BOUND`, `UNKNOWN-LOOP-UNSUPPORTED`, `UNKNOWN-WALL-TIME-LIMIT`, `UNKNOWN-INSTRUCTION-LIMIT`, `UNKNOWN-STATE-LIMIT`, `UNKNOWN-SOLVER-QUERY-LIMIT`, `UNKNOWN-SOLVER-TIMEOUT`, `UNKNOWN-SOLVER-UNKNOWN`, `UNKNOWN-SOLVER-FAILURE` |
+| Completeness/resource | `UNKNOWN-LOOP-BOUND`, `UNKNOWN-LOOP-UNSUPPORTED`, `UNKNOWN-WALL-TIME-LIMIT`, `UNKNOWN-INSTRUCTION-LIMIT`, `UNKNOWN-EXPRESSION-WIDTH-LIMIT`, `UNKNOWN-STATE-LIMIT`, `UNKNOWN-SOLVER-QUERY-LIMIT`, `UNKNOWN-SOLVER-TIMEOUT`, `UNKNOWN-SOLVER-UNKNOWN`, `UNKNOWN-SOLVER-FAILURE` |
 | Feasible program error | `REACHED-UNREACHABLE` |
 | Executor invariant failure | `INTERNAL-MISSING-SSA-BINDING`, `INTERNAL-INVALID-PHI-PREDECESSOR`, `INTERNAL-INVALID-SYMBOLIC-BINDING`, `INTERNAL-NO-FEASIBLE-SUCCESSOR`, `INTERNAL-INVALID-EXECUTOR-STATE`, `INTERNAL-SOLVER-ERROR`, `INTERNAL-EXPR-CONSTRUCTION` |
 
@@ -258,6 +258,9 @@ remainder of the minimum signed value by `-1`, split feasible UB paths and
 produce solver witnesses. M5 emits `UNSAFE-UB` when the witness is closed over
 registered input bytes. Scalar poison constants, `add/sub/mul/shl` nsw/nuw,
 `udiv/sdiv/lshr/ashr` exact, and overshifts carry a Boolean poison condition.
+Wrap checks that would exceed the expression bit width limit return
+`UNKNOWN-EXPRESSION-WIDTH-LIMIT`. The M9 driver checks add/sub at i1048576
+and mul/shl at i524289, plus controls whose intermediate width fits.
 Arithmetic, comparisons, casts, select, and PHI propagate it; branch, switch,
 `noundef` return, and scalar `noundef` arguments of supported direct calls
 split feasible poison and defined paths. A direct call with an unused scalar
@@ -270,22 +273,25 @@ operands remain `UNKNOWN-FREEZE`.
 
 The supported `inbounds` GEP subset proves each intermediate offset is within
 the object (including one-past), checks index and address arithmetic, and
-otherwise returns `UNKNOWN-INBOUNDS-GEP`. An index wider than the pointer index
+otherwise returns `UNKNOWN-INBOUNDS-GEP`. A one-past pointer can be compared.
+Loading or storing a byte through it reports `OUT_OF_BOUNDS`, as checked by
+`one_past_load` and `one_past_store` in the M9 IR and driver.
+An index wider than the pointer index
 width is gated because signed-preserving truncation is not proved. Full-object
 `llvm.lifetime.start/end` is modeled for stack objects. An alloca named by
 `lifetime.start` is initially dead; start resets initialization, and repeated
 end is a no-op. A start on an already live object
 poisons its bytes in the pinned LangRef; the executor gates reads of those bytes
-as `UNKNOWN` until they are overwritten. The pinned LangRef specifies an
-object size or `-1`; mismatched sizes, including zero for a nonempty object,
-return `UNKNOWN`. Interior-pointer or unresolved lifetime
+as `UNKNOWN` until they are overwritten. The size operand does not constrain
+the pointer-named object lifetime; zero and mismatched constant sizes have the
+same effect as the object's actual size. Interior-pointer or unresolved lifetime
 regions remain `UNKNOWN-UNSUPPORTED-MEMORY-INSTRUCTION`.
 
 The hand-written [M9 LangRef cases](../tests/ir/m9/langref.ll),
 [artifact witness checks](../tests/check_m9_langref_artifacts.py), and
 [preflighted driver checks](../tests/check_m9_driver.py) pin these verdicts;
 [lifetime cases](../tests/ir/m7/lifetime.ll) cover before-start access,
-restart, repeated end, and partial regions.
+restart, repeated end, ignored size operands, and non-base pointers.
 
 ## Explicit M0 opcode and intrinsic manifest
 

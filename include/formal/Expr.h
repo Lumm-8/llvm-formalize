@@ -210,6 +210,7 @@ public:
   ExprRef sext(ExprRef Value, unsigned Width);
   ExprRef trunc(ExprRef Value, unsigned Width);
 
+  unsigned maxBitWidth() const noexcept;
   std::size_t nodeCount() const noexcept;
   std::size_t updateCount() const noexcept;
   std::size_t arrayCount() const noexcept;

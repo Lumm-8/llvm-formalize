@@ -581,6 +581,13 @@ An unused poison result does not itself create UB. A chosen select arm alone
 contributes arm poison; PHI reads only the actual predecessor. The normal and
 UB sides of a symbolic poison condition retain separate constraints and paths.
 
+The wrap checks need an intermediate width of `width + 1` for add/sub
+and `2 * width` for mul/shl. When that width exceeds the configured
+expression limit, the executor reports `UNKNOWN-EXPRESSION-WIDTH-LIMIT`
+before building the predicate. The default expression limit is 2²⁰ bits.
+The M9 IR and driver tests exercise both sides of the limit, including an
+unflagged add at the maximum source width.
+
 `ObjectState` still has byte initialization masks but no poison mask. Storing
 a possibly poison scalar or using one as a GEP index returns UNKNOWN. Scalar
 poison arguments of supported direct defined calls retain their condition;
@@ -600,26 +607,85 @@ integer division and remainder UB split feasible normal and UB paths, and a
 closed UB witness has an `LLVM-UB-*` reason and `UNSAFE-UB` verdict. Plain
 instruction `inbounds` GEP is accepted only for the checked object and index
 subset; unproved bounds or wrap return UNKNOWN. Full-object stack lifetime is
-modeled with M7's existing `ObjectState::Live` and initialization masks;
-unresolved or partial regions return UNKNOWN.
+modeled with M7's existing `ObjectState::Live` and initialization masks; its
+size operand is ignored when applying the pointer-named object effect.
+Unresolved or non-base pointers return UNKNOWN.
 
 The hand-written tests are `tests/ir/m9/langref.ll`,
 `tests/ir/m7/lifetime.ll`, and `tests/ir/m3/unknown.ll`. The M9 driver and
 artifact tests check UB kind, model bytes, the coexistence of a normal and UB
 path for symbolic division and `add nsw`, and absence of a counterexample for
-UNKNOWN. `FormalExecutor.M9.SmallWidthFlags` exhaustively compares 128 i2
-add/sub/mul/shl nsw/nuw cases and 64 i2 exact division/shift cases against
-concrete arithmetic.
+UNKNOWN. The one-past GEP cases check that construction is valid and that
+both load and store report `OUT_OF_BOUNDS` at the dereference.
+`FormalExecutor.M9.SmallWidthFlags` exhaustively compares 672
+i1–i3 add/sub/mul/shl nsw/nuw cases and 336 exact division/shift cases
+against the independent concrete oracles.
 `counterexample.json` labels each exported witness `LLVM_UB` or
 `PROPERTY_ERROR` and `IR_ONLY`, and includes the IR source, dynamic call
 stack, path SMT, and final trigger guard. Native replay requires separate
 evidence.
-Alive2 was unavailable in this environment, so no Alive2 differential result
-is claimed.
+`FormalExecutor.M9.WideFlags` compares 3326 boundary and seeded operand
+cases across i8, i24, i64, and i128. Python integers and the pinned LLVM
+`APInt` operations check definedness. The test also checks the executor's
+result bits on defined inputs and its exact reason code on error paths.
+Pinned LLVM InstCombine independently checks the 1565 defined cases by
+folding the operations and comparing the returned values. These comparisons
+cover the sampled concrete inputs.
 
-After the conditional scalar `freeze` expansion, the full CTest run passed
-74/74 in each of Debug, Release, and ASan/UBSan/LSan builds. The sanitizer run used an unsandboxed
-process because LSan cannot initialize under the sandbox's ptrace setup.
+`FormalExecutor.M9.SymbolicFlags` uses Z3 to compare the executor's exported
+poison trigger and normal input/output relation with independent bit vector
+formulas. It covers i128 `add nsw` followed by `lshr exact`, i24
+`sub nuw`, and 16 i8 cases. At i8 it checks `nsw`, `nuw`, and their
+combination on add/sub/mul/shl, plus `exact` on udiv/sdiv/lshr/ashr.
+The division cases restrict the divisor to a positive nonzero range to
+isolate exactness. All other inputs are unrestricted at the tested widths.
+For each case, Z3 must report
+`UNSAT` for both XOR queries and `SAT` for the exported UB path. The IR also
+checks that the flagged payload agrees with the unflagged result on the
+defined path before storing the latter. Queries and solver answers are saved
+under `m9-symbolic-flags/` in the build directory.
+
+To run the symbolic Alive2 refinement test, configure with
+`-DFORMAL_ENABLE_ALIVE2_TESTS=ON` and optionally set
+`-DFORMAL_ALIVE_TV_EXECUTABLE=/path/to/alive-tv`. Run CTest with
+`-R FormalExecutor.M9.Alive2`. The fixture compares i128 `add nsw` and
+`lshr exact` against explicit widened overflow and lost-bit checks.
+On November 23, 2026, standalone Alive2 v20.0
+(`c0f5434f402ad91714ee0952f686cd0f524920ad`) ran the fixture successfully.
+The verifier was built separately against LLVM 20.1.8 with RTTI and used
+Z3 4.8.12. Alive2 accepted both refinement directions for the signed-add
+and exact-shift transformation at i8, i24, i64, and i128, plus both
+directions for i24 unsigned subtraction. All ten checks passed. Their
+IR, logs, and verifier version are in
+`build-m3-debug/m9-validation-2026-11-23/alive2/`. This establishes
+equivalence for the listed transformations and widths.
+
+On November 23, 2026, the expression width limit fix and the expanded
+symbolic checks passed all five M9 CTest tests in Debug. Release and
+ASan/UBSan/LSan each passed the three targeted M9 tests (IR, driver, and
+symbolic checks). These runs are recorded in `m9-width-regression.log`
+in the respective build directories.
+
+The November 23 full rerun after the expression width limit fix passed 76/76
+in each of Debug, Release, and ASan/UBSan/LSan, with zero failures or skips
+in the final runs. Each build directory retains `ctest.log` and
+`ctest.xml` under `m9-validation-2026-11-23/`. The checked input manifest,
+`source-sha256.txt`, and its base commit are in the same directory in the
+Debug build. Each full run included `M9.WideFlags` and all 18 cases in
+`M9.SymbolicFlags`. In the initial sanitizer run, `M9.WideFlags` reached
+the default 1500-second timeout. The logged full rerun used
+`--timeout 3600` and passed. The initial run is retained as
+`ctest-timeout-1500.log` and `ctest-timeout-1500.xml`.
+
+On November 20, 2026, the full CTest suite passed 76/76 in each of Debug,
+Release, and ASan/UBSan/LSan, including both `M9.WideFlags` and
+`M9.SymbolicFlags`. Each build directory (`build-m3-debug`,
+`build-m3-release`, and `build-m3-sanitize`) retains its full
+`m9-full-ctest.log`. The Debug directory also retains the checked source
+manifest `m9-test-input-sha256.txt` and its base commit in
+`m9-test-base-commit.txt`. All three runs used Z3 4.8.12 for the
+symbolic cross-check. The sanitizer run used an unsandboxed process because
+LSan cannot initialize under the sandbox's ptrace setup.
 The M9 driver reparses the symbolic `noundef` call UB path with the pinned
 STP binary and checks SAT. It also proves the conditional i1 `freeze`
 input/output relation equivalent to the pinned LangRef truth table by asking

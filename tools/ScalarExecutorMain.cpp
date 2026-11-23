@@ -10,6 +10,9 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/IRReader/IRReader.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -52,6 +55,48 @@ bool parseUnsigned(const std::string &Text, std::uint64_t &Value) {
   Value = Parsed;
   return true;
 }
+
+#ifdef FORMAL_CHECK_DEFAULT_M5
+std::string writePreflightUnknown(const std::string &OutputDir,
+                                  const std::string &Entry,
+                                  const formal::PreflightResult &Validation) {
+  const std::filesystem::path Pattern =
+      std::filesystem::path(OutputDir) / ".result-%%%%%%.json.tmp";
+  llvm::SmallString<256> TemporaryPath;
+  int Descriptor = -1;
+  if (std::error_code Error = llvm::sys::fs::createUniqueFile(
+          Pattern.string(), Descriptor, TemporaryPath))
+    return Error.message();
+
+  llvm::json::Object Result{{"schema_version", 1},
+                             {"phase", "M0_PREFLIGHT"},
+                             {"status", "UNKNOWN"},
+                             {"reason", formal::preflightCodeName(Validation.Code)},
+                             {"message", Validation.Message},
+                             {"entry", Entry},
+                             {"pinned_llvm_version", FORMAL_PINNED_LLVM_VERSION},
+                             {"pinned_llvm_revision", FORMAL_PINNED_LLVM_REVISION}};
+  {
+    llvm::raw_fd_ostream Output(Descriptor, true);
+    Output << llvm::formatv("{0:2}", llvm::json::Value(std::move(Result)))
+           << '\n';
+    Output.flush();
+    if (Output.has_error()) {
+      const std::string Detail = Output.error().message();
+      llvm::sys::fs::remove(TemporaryPath);
+      return Detail;
+    }
+  }
+  const std::filesystem::path Final =
+      std::filesystem::path(OutputDir) / "result.json";
+  if (std::error_code Error =
+          llvm::sys::fs::rename(TemporaryPath, Final.string())) {
+    llvm::sys::fs::remove(TemporaryPath);
+    return Error.message();
+  }
+  return {};
+}
+#endif
 
 std::string valueText(const formal::SymbolicValue &Value) {
   if (Value.poisonCondition()) {
@@ -242,6 +287,15 @@ int main(int argc, char **argv) {
       *Module, Entry, LLVM_VERSION_MAJOR, FORMAL_PINNED_LLVM_VERSION,
       FORMAL_PINNED_LLVM_REVISION, AllowUnversionedIR);
   if (!Validation.valid()) {
+    if (Validation.incomplete() && EnableRegistration) {
+      std::string Failure =
+          writePreflightUnknown(OutputDir, Entry, Validation);
+      if (!Failure.empty()) {
+        llvm::errs() << "formal-check cannot write preflight result.json: "
+                     << Failure << '\n';
+        return 4;
+      }
+    }
     llvm::errs() << "formal-check preflight "
                  << formal::preflightCodeName(Validation.Code) << ": "
                  << Validation.Message << '\n';
