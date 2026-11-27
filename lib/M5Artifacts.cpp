@@ -12,6 +12,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -159,6 +160,62 @@ const char *pathReason(const PathResult &Path) {
   return "INTERNAL-UNKNOWN-REASON";
 }
 
+std::string archiveTestRun(const llvm::Module &Module,
+                           const M5Analysis &Analysis,
+                           const std::string &Report, const std::string &Metrics) {
+  const char *Root = std::getenv("FORMAL_TEST_ARTIFACT_ROOT");
+  if (!Root || !*Root)
+    return {};
+  llvm::StringRef Test(std::getenv("FORMAL_TEST_CASE"));
+  if (Test.empty() ||
+      Test.find_first_not_of("abcdefghijklmnopqrstuvwxyz"
+                             "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") !=
+          llvm::StringRef::npos ||
+      Test == "." || Test == "..")
+    return "invalid formal test case name";
+
+  namespace fs = std::filesystem;
+  fs::path Parent = fs::path(Root) / Test.str();
+  std::error_code Error;
+  fs::create_directories(Parent, Error);
+  if (Error)
+    return "cannot create test artifact directory: " + Error.message();
+  llvm::SmallString<256> Unique;
+  if (auto Failure = llvm::sys::fs::createUniqueDirectory(
+          (Parent / "run").string(), Unique))
+    return "cannot start test artifact archive: " + Failure.message();
+  const fs::path Directory(Unique.str().str());
+
+  std::string IR;
+  llvm::raw_string_ostream IRStream(IR);
+  Module.print(IRStream, nullptr);
+  llvm::json::Array ErrorPaths;
+  for (const auto &Path : Analysis.Execution.Paths)
+    if (Path.Status == PathStatus::Error) {
+      SMTLibQuery Query;
+      Query.Constraints = Path.Constraints;
+      ErrorPaths.push_back(llvm::json::Object{
+          {"reason", pathReason(Path)},
+          {"source", locationJSON(Path.Location)},
+          {"query", SMTLibWriter::writeQuery(Query)}});
+    }
+  std::string ErrorJSON;
+  llvm::raw_string_ostream(ErrorJSON)
+      << llvm::json::Value(std::move(ErrorPaths)) << '\n';
+  for (const auto &[Name, Body] : {
+           std::pair<const char *, const std::string &>("input.ll", IR),
+           {"metrics.json", Metrics}, {"errors.json", ErrorJSON},
+           {"relation.smt2", Analysis.Relation.SMTLib}})
+    if (auto Failure = publish(Directory / Name, Body); !Failure.empty())
+      return Failure;
+  if (Analysis.CounterexampleJSON)
+    if (auto Failure = publish(Directory / "counterexample.json",
+                               *Analysis.CounterexampleJSON);
+        !Failure.empty())
+      return Failure;
+  return publish(Directory / "result.json", Report);
+}
+
 } // namespace
 
 std::string writeM5Artifacts(const std::filesystem::path &Directory,
@@ -221,12 +278,24 @@ std::string writeM5Artifacts(const std::filesystem::path &Directory,
   llvm::json::Object Metrics{
       {"states_created", static_cast<std::int64_t>(Stats.StatesCreated)},
       {"forks", static_cast<std::int64_t>(Stats.Forks)},
+      {"state_merges", static_cast<std::int64_t>(Stats.StateMerges)},
       {"pruned_paths", static_cast<std::int64_t>(Stats.PrunedPaths)},
       {"assumption_pruned_paths",
        static_cast<std::int64_t>(Stats.AssumptionPrunedPaths)},
       {"executed_instructions",
        static_cast<std::int64_t>(Stats.ExecutedInstructions)},
-      {"solver_queries", static_cast<std::int64_t>(Stats.SolverQueries)}};
+      {"solver_queries", static_cast<std::int64_t>(Stats.SolverQueries)},
+      {"solver_backend_queries",
+       static_cast<std::int64_t>(Stats.SolverBackendQueries)},
+      {"solver_cache_hits", static_cast<std::int64_t>(Stats.SolverCacheHits)},
+      {"ast_nodes", static_cast<std::int64_t>(Stats.ASTNodes)},
+      {"ast_depth", static_cast<std::int64_t>(Stats.ASTDepth)},
+      {"max_update_list_length",
+       static_cast<std::int64_t>(Stats.MaxUpdateListLength)},
+      {"solver_time_ns", static_cast<std::int64_t>(Stats.SolverTimeNs)},
+      {"wall_time_ns", static_cast<std::int64_t>(Stats.WallTimeNs)},
+      {"peak_resident_bytes",
+       static_cast<std::int64_t>(Stats.PeakResidentBytes)}};
   std::string MetricsBody;
   llvm::raw_string_ostream(MetricsBody)
       << llvm::json::Value(std::move(Metrics)) << '\n';
@@ -441,7 +510,9 @@ std::string writeM5Artifacts(const std::filesystem::path &Directory,
   }
   std::string JSON;
   llvm::raw_string_ostream(JSON) << llvm::json::Value(std::move(Root)) << '\n';
-  return publish(Directory / "result.json", JSON);
+  if (auto Failure = publish(Directory / "result.json", JSON); !Failure.empty())
+    return Failure;
+  return archiveTestRun(Module, Analysis, JSON, MetricsBody);
 }
 
 } // namespace formal

@@ -1,0 +1,22 @@
+Traceback (most recent call last):
+  File "/home/dengshy/github/llvm-formalize/tests/run_m10_dual_mode.py", line 179, in <module>
+    main()
+  File "/home/dengshy/github/llvm-formalize/tests/run_m10_dual_mode.py", line 175, in main
+    verify(root, args.z3, args.jobs)
+  File "/home/dengshy/github/llvm-formalize/tests/run_m10_dual_mode.py", line 156, in verify
+    for counts in workers.map(check, left):
+  File "/usr/lib/python3.10/concurrent/futures/_base.py", line 621, in result_iterator
+    yield _result_or_cancel(fs.pop())
+  File "/usr/lib/python3.10/concurrent/futures/_base.py", line 319, in _result_or_cancel
+    return fut.result(timeout)
+  File "/usr/lib/python3.10/concurrent/futures/_base.py", line 451, in result
+    return self.__get_result()
+  File "/usr/lib/python3.10/concurrent/futures/_base.py", line 403, in __get_result
+    raise self._exception
+  File "/usr/lib/python3.10/concurrent/futures/thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+  File "/home/dengshy/github/llvm-formalize/tests/run_m10_dual_mode.py", line 154, in check
+    return compare_group(root, z3, key, left[key], right[key])
+  File "/home/dengshy/github/llvm-formalize/tests/run_m10_dual_mode.py", line 143, in compare_group
+    raise AssertionError(key, before[0], failures)
+AssertionError: (('FormalExecutor.M8.ResourceLimits', 'infinite_loop', 'de227be7daee8c9cbf6286ef51b0be38c705f4b66c556862cde5bd3c19ea94f7', '{"limits": {"allocation_failures": false, "default_loop_backedge_bound": 100000000, "max_call_depth": 32, "max_instructions_per_state": 100000000, "max_object_bytes": 65536, "max_pointer_candidates": 64, "max_solver_queries": "unlimited", "max_states": 10000, "max_wall_time_ms": 1, "require_local_loop_bound": false, "timeout_ms": 30000}, "loop_limit_policy": "unknown", "overlap_policy": "same-kind-overlap-rejected; exact-inout-allowed", "semantic_options": {"allocation_failure_mode": "assume success", "byte_order": "little", "malloc_zero_size": "fresh zero-byte object", "solver_seed": "pinned-STP-default", "zero_size": "UNKNOWN"}}'), PosixPath('/home/dengshy/github/llvm-formalize/build-m10-checkpoints/a-release/off/FormalExecutor.M8.ResourceLimits/run-0ac45d'), [(PosixPath('/home/dengshy/github/llvm-formalize/build-m10-checkpoints/a-release/on/FormalExecutor.M8.ResourceLimits/run-2c0856'), AssertionError([Counter({('INCOMPLETE', 'UNKNOWN-WALL-TIME-LIMIT', ('infinite_loop', 'entry', 0, 'br')): 1}), Counter({('INCOMPLETE', 'UNKNOWN-WALL-TIME-LIMIT', ('infinite_loop', 'header', 1, 'br')): 1})]))])

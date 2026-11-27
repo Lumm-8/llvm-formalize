@@ -1,0 +1,20 @@
+Note: Google Test filter = FormalQueryCache.*:FormalExprRewrites.*
+[==========] Running 4 tests from 2 test suites.
+[----------] Global test environment set-up.
+[----------] 3 tests from FormalQueryCache
+[ RUN      ] FormalQueryCache.RevalidatesSatAndRequiresExactUnsat
+[       OK ] FormalQueryCache.RevalidatesSatAndRequiresExactUnsat (0 ms)
+[ RUN      ] FormalQueryCache.BackendFailuresAreNeverRemembered
+[       OK ] FormalQueryCache.BackendFailuresAreNeverRemembered (0 ms)
+[ RUN      ] FormalQueryCache.STPProfileIncludesPolicyAndRespectsAuditHooks
+[       OK ] FormalQueryCache.STPProfileIncludesPolicyAndRespectsAuditHooks (0 ms)
+[----------] 3 tests from FormalQueryCache (0 ms total)
+
+[----------] 1 test from FormalExprRewrites
+[ RUN      ] FormalExprRewrites.APIntTruthTables
+[       OK ] FormalExprRewrites.APIntTruthTables (3 ms)
+[----------] 1 test from FormalExprRewrites (3 ms total)
+
+[----------] Global test environment tear-down
+[==========] 4 tests from 2 test suites ran. (4 ms total)
+[  PASSED  ] 4 tests.

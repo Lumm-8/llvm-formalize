@@ -1,0 +1,57 @@
+[0/1] Re-running CMake...
+-- Performing Test FORMAL_STP_API_MATCHES_LOCK
+-- Performing Test FORMAL_STP_API_MATCHES_LOCK - Success
+-- Registering FormalPass as a pass plugin (static build: OFF)
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /home/dengshy/github/llvm-formalize/build-m10-debug
+[1/50] Building CXX object CMakeFiles/FormalExpr.dir/lib/Expr.cpp.o
+[2/50] Building CXX object CMakeFiles/FormalExpr.dir/lib/SMTLibWriter.cpp.o
+[3/50] Linking CXX static library libFormalExpr.a
+[4/50] Building CXX object CMakeFiles/FormalSolver.dir/lib/Solver.cpp.o
+[5/50] Building CXX object CMakeFiles/FormalPass.dir/lib/FormalPass.cpp.o
+[6/50] Building CXX object CMakeFiles/FormalSolver.dir/lib/STPSolver.cpp.o
+[7/50] Linking CXX static library libFormalSolver.a
+[8/50] Building CXX object CMakeFiles/FormalSTPWorker.dir/tools/STPWorkerMain.cpp.o
+[9/50] Building CXX object CMakeFiles/FormalExecutor.dir/lib/Constraints.cpp.o
+[10/50] Linking CXX executable FormalSTPWorker
+[11/50] Building CXX object CMakeFiles/FormalExecutor.dir/lib/Memory.cpp.o
+[12/50] Building CXX object CMakeFiles/FormalExecutor.dir/lib/M5Artifacts.cpp.o
+[13/50] Building CXX object CMakeFiles/FormalExecutor.dir/lib/M5Run.cpp.o
+[14/50] Building CXX object CMakeFiles/FormalExecutor.dir/lib/Relation.cpp.o
+[15/50] Building CXX object CMakeFiles/FormalExecutor.dir/lib/Executor.cpp.o
+[16/50] Building CXX object CMakeFiles/FormalExecutor.dir/lib/Result.cpp.o
+[17/50] Building CXX object CMakeFiles/FormalExecutor.dir/lib/State.cpp.o
+[18/50] Linking CXX static library libFormalExecutor.a
+[19/50] Building CXX object CMakeFiles/FormalScalarExecutor.dir/tools/ScalarExecutorMain.cpp.o
+[20/50] Linking CXX shared module FormalPass.so
+[21/50] Building CXX object CMakeFiles/formal-check.dir/tools/ScalarExecutorMain.cpp.o
+[22/50] Linking CXX executable FormalScalarExecutor
+[23/50] Linking CXX executable formal-check
+[24/50] Building CXX object CMakeFiles/FormalExprUnitTests.dir/tests/ExprUnitTest.cpp.o
+[25/50] Linking CXX executable FormalExprUnitTests
+[26/50] Building CXX object CMakeFiles/FormalSolverTest.dir/lib/Solver.cpp.o
+[27/50] Building CXX object CMakeFiles/FormalPassWrongHostDigest.dir/lib/FormalPass.cpp.o
+[28/50] Linking CXX shared module FormalPassWrongHostDigest.so
+[29/50] Building CXX object CMakeFiles/FormalSTPTestWorker.dir/tools/STPWorkerMain.cpp.o
+[30/50] Building CXX object CMakeFiles/FormalSolverTest.dir/lib/STPSolver.cpp.o
+[31/50] Linking CXX static library libFormalSolverTest.a
+[32/50] Linking CXX executable FormalSTPTestWorker
+[33/50] Building CXX object CMakeFiles/FormalExecutorUnitTests.dir/tests/ExecutorUnitTest.cpp.o
+[34/50] Building CXX object CMakeFiles/FormalSolverUnitTests.dir/tests/SolverUnitTest.cpp.o
+[35/50] Linking CXX executable FormalSolverUnitTests
+[36/50] Linking CXX executable FormalExecutorUnitTests
+[37/50] Building CXX object CMakeFiles/FormalMemoryUnitTests.dir/tests/MemoryUnitTest.cpp.o
+[38/50] Building CXX object CMakeFiles/FormalMemoryBenchmark.dir/tests/MemoryBenchmark.cpp.o
+[39/50] Building CXX object CMakeFiles/FormalExecutorDifferentialTests.dir/tests/ExecutorDifferentialTest.cpp.o
+[40/50] Linking CXX executable FormalMemoryUnitTests
+[41/50] Linking CXX executable FormalMemoryBenchmark
+[42/50] Building CXX object CMakeFiles/FormalSolverQueryEmitter.dir/tests/SolverQueryEmitter.cpp.o
+[43/50] Linking CXX executable FormalSolverQueryEmitter
+[44/50] Building CXX object CMakeFiles/FormalSolverDifferentialEmitter.dir/tests/SolverDifferentialEmitter.cpp.o
+[45/50] Linking CXX executable FormalSolverDifferentialEmitter
+[46/50] Building CXX object CMakeFiles/FormalExprSMTEmitter.dir/tests/ExprSMTEmitter.cpp.o
+[47/50] Linking CXX executable FormalExprSMTEmitter
+[48/50] Linking CXX executable FormalExecutorDifferentialTests
+[49/50] Building CXX object CMakeFiles/FormalRelationUnitTests.dir/tests/RelationUnitTest.cpp.o
+[50/50] Linking CXX executable FormalRelationUnitTests

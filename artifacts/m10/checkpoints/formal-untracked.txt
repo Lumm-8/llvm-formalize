@@ -1,0 +1,15 @@
+docs/M10_CHECKPOINTS.md
+docs/M10_OPTIMIZATIONS.md
+tests/benchmark_m10.py
+tests/benchmarks/m10/commuted-guards.ll
+tests/benchmarks/m10/diamonds.ll
+tests/benchmarks/m10/distinct-object-writes.ll
+tests/benchmarks/m10/independent-optimizations.ll
+tests/benchmarks/m10/loop-branches.ll
+tests/benchmarks/m10/merge-compatibility.ll
+tests/benchmarks/m10/object-writes.ll
+tests/check_m10_merging.py
+tests/check_m10_optimizations.py
+tests/compare_m10_lit_artifacts.py
+tests/run_m10_dual_mode.py
+tests/test_m10_comparison.py

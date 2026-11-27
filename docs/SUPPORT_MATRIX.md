@@ -1,6 +1,6 @@
-# FormalPass M0–M8 Support Matrix
+# FormalPass M0–M10 Support Matrix
 
-This matrix is the executable contract for the implemented M0 through M8 scope.
+This matrix is the executable contract for the implemented M0 through M10 scope.
 `SUPPORTED` means the named behavior is implemented and tested at its stated
 layer. For M0 through M2 it does not mean that LLVM instructions are
 symbolically executed; M3 adds only the scalar instruction subset below.
@@ -229,6 +229,17 @@ artifact contract.
 | Zero sizes, null registration, out-of-bounds regions, conditional pointer candidates | UNKNOWN | Deterministic rejection in M5/V1; no native UB is silently modeled; `tests/ir/m5/edge-cases.ll` |
 | Heap-region registration and heap lifetime | SUPPORTED SUBSET | M7 allocators produce fresh objects and free ends them; `tests/ir/m5/heap-registration-blocked.ll` enables failure paths and explicitly excludes null with `__formal_assume`. Without failure forks, M5 records a success assumption and an incomplete failure path, so it cannot report unconditional SAFE; `FormalExecutor.M7.HeapEvents` checks all three allocators. Dead regions, symbolic sizes, and unsupported runtimes cannot yield SAFE |
 | Ordinary direct calls and heap operations | SUPPORTED SUBSET / UNKNOWN | Defined C calls, frames, returns, `byval`/`sret`, stack lifetime, aliases, and named heap models are exercised by `FormalExecutor.Lit.M7` (including [`alias-calls.ll`](../tests/ir/m7/alias-calls.ll), calloc overflow, and pointer-shadow copying through realloc/byval), `FormalExecutor.M7.ClangABI` (including a pointer-bearing Clang byval argument and an exact pinned-Clang IR snapshot check), `FormalExecutor.M7.NoundefAggregate`, `FormalExecutor.M7.CrossCallTruthTable`, `FormalExecutor.M7.PluginConsistency`, seven M7 heap replay tests, `FormalExecutor.M7.OverlapMemcpyReplay`, `FormalExecutor.M7.UseAfterReturnReplay`, `FormalExecutor.M7.AbortReplay`, and `FormalExecutor.M7.AssertReplay`; passing native replay tests retain witnesses and native evidence in the build's `m7-evidence/`; unmodeled ABIs remain UNKNOWN |
+
+## M10 execution optimizations
+
+| Feature | Status | Tests and scope |
+|---|---|---|
+| Baseline and independently selected modes | SUPPORTED | All optimization switches default off. The dual-mode CTest runner compares verdicts, error guards, relations, and witnesses. |
+| Bounded expression rewrites | OPT-IN | Commutative ordering and local Select normalization. APInt truth tables and M9 differential fixtures cover values and special-value behavior. |
+| Exact feasibility cache | OPT-IN | Definitive results for a complete normalized query under one execution configuration. SAT models are revalidated on hits. |
+| Guarded state joins | OPT-IN SUBSET | Straight-line sibling arms at a common join after PHIs, including inside a loop or nested call. Compatible scalar, aggregate, pointer, and initialized memory differences are guarded. |
+| Different allocations, lifetimes, initialization masks, pointer shadows, registration descriptors, dynamic frames, or loop activations | KEEP SEPARATE | Focused IR and unit regressions exercise these checks. |
+| CUDD | DEFERRED | Its independent build switch defaults OFF. See the evidence in [M10_CHECKPOINTS.md](M10_CHECKPOINTS.md). |
 
 ## LLVM semantic families outside the M4 executor subset
 

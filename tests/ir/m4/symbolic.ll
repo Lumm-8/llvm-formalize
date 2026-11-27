@@ -1,7 +1,8 @@
 ; RUN: %scalar-executor %s --m4 --entry symbolic_index | %FileCheck %s --check-prefix=INDEX
 ; RUN: %scalar-executor %s --m4 --entry pointer_select | %FileCheck %s --check-prefix=SELECT
 ; RUN: %scalar-executor %s --m4 --entry nullable_select | %FileCheck %s --check-prefix=NULLABLE
-; RUN: %scalar-executor %s --m4 --entry branch_cow | %FileCheck %s --check-prefix=COW
+; RUN: %scalar-executor %s --m4 --entry branch_cow | %FileCheck %s --check-prefixes=COW,COW-%merge-mode
+; RUN: %scalar-executor %s --m4 --entry check_branch_cow | %FileCheck %s --check-prefix=COW-RESULT
 ; RUN: %scalar-executor %s --m4 --entry pointer_select --timeout-ms 0 | %FileCheck %s --check-prefix=TIMEOUT
 
 target datalayout = "e-p:64:64-i64:64-n8:16:32:64-S128"
@@ -65,8 +66,22 @@ done:
   ret i8 %v
 }
 ; COW: M4 status M4_EXECUTOR_COMPLETE
-; COW: return=bv8:1
-; COW: return=bv8:2
+; COW-BASELINE: return=bv8:1
+; COW-BASELINE: return=bv8:2
+; COW-MERGED: M4 paths 1
+; COW-MERGED: return=bv8:symbolic
+
+define void @check_branch_cow(i1 %choose) {
+  %actual = call i8 @branch_cow(i1 %choose)
+  %expected = select i1 %choose, i8 1, i8 2
+  %same = icmp eq i8 %actual, %expected
+  br i1 %same, label %ok, label %bad
+ok:
+  ret void
+bad:
+  unreachable
+}
+; COW-RESULT: M4 status M4_EXECUTOR_COMPLETE
 
 ; TIMEOUT: M4 status UNKNOWN
 ; TIMEOUT: reason=UNKNOWN-SOLVER-TIMEOUT

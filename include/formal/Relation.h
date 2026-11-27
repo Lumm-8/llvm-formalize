@@ -11,6 +11,7 @@ namespace formal {
 struct RelationArtifact {
   bool Complete = false;
   bool UnderApproximation = false;
+  unsigned ExpressionDepth = 0;
   std::string Reason;
   std::string SMTLib;
   std::string JSON;

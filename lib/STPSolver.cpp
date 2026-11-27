@@ -28,8 +28,8 @@
 #include <csignal>
 #include <fcntl.h>
 #include <sys/resource.h>
-#include <sys/syscall.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -2625,5 +2625,23 @@ std::string STPSolver::backendCompilationProfile() const {
 }
 
 std::string STPSolver::satBackend() const { return "MiniSat"; }
+
+std::optional<std::string> STPSolver::feasibilityCacheProfile() const {
+  const auto &Options = Implementation->Options;
+  if (Options.ExportAllQueries || Options.AdditionalModelAudit)
+    return std::nullopt;
+  std::string Profile;
+  llvm::raw_string_ostream Out(Profile);
+  const auto FailureDirectory = Options.FailureQueryDirectory.string();
+  Out << "STP:" << backendVersion() << ':' << satBackend() << ':'
+      << backendCompilationProfile() << ':'
+      << (Options.Timeout == STPSolverOptions::UnlimitedTimeout
+              ? "unlimited" : "worker-wall-deadline")
+      << ':' << Options.Timeout.count() << ':' << Options.MaxConflicts
+      << ':' << Options.MaxArrayBytes << ':' << Options.MaxWorkerResponseBytes
+      << ':' << Options.MaxWorkerMemoryBytes << ':' << Options.MaxWorkerFileBytes
+      << ':' << FailureDirectory.size() << ':' << FailureDirectory;
+  return Profile;
+}
 
 } // namespace formal

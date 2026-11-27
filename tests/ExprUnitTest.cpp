@@ -40,6 +40,24 @@ TEST(FormalExpr, IsImmutableAndHashConsed) {
   EXPECT_EQ(Context.constant(llvm::APInt(8, 7)), Context.constant(8, 7));
 }
 
+TEST(FormalExpr, OptionalRewritesPreserveOperandOrderWhereItMatters) {
+  ExprContextOptions Options;
+  Options.EnableRewriting = true;
+  ExprContext Context(Options);
+  ExprRef X = Context.symbol(65, "x");
+  ExprRef Y = Context.symbol(65, "y");
+  EXPECT_EQ(Context.add(X, Y), Context.add(Y, X));
+  EXPECT_EQ(Context.eq(X, Y), Context.eq(Y, X));
+  EXPECT_NE(Context.sub(X, Y), Context.sub(Y, X));
+  EXPECT_NE(Context.ult(X, Y), Context.ult(Y, X));
+
+  ExprRef Condition = Context.booleanSymbol("c");
+  ExprRef Negated = Context.logicalNot(Condition);
+  EXPECT_EQ(Context.select(Negated, X, Y), Context.select(Condition, Y, X));
+  EXPECT_EQ(Context.select(Condition, Context.boolean(true),
+                           Context.boolean(false)), Condition);
+}
+
 TEST(FormalExpr, RejectsMalformedSortsWidthsNamesAndContexts) {
   ExprContext Context;
   ExprContext Other;

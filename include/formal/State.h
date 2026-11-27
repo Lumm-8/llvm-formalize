@@ -16,6 +16,7 @@
 namespace llvm {
 class Argument;
 class BasicBlock;
+class DominatorTree;
 class Function;
 class Instruction;
 class Value;
@@ -49,6 +50,7 @@ public:
   void set(llvm::Function *Function, llvm::BasicBlock *Block,
            llvm::Instruction *Instruction) noexcept;
   void advance() noexcept;
+  bool operator==(const ProgramCounter &) const = default;
 
 private:
   llvm::Function *CurrentFunction = nullptr;
@@ -63,9 +65,11 @@ public:
     std::uint64_t Traversals = 0;
     std::uint64_t Bound = 0;
     std::string BoundSource;
+    bool operator==(const LoopActivation &) const = default;
   };
   explicit StackFrame(llvm::Function *Function = nullptr)
       : CurrentFunction(Function) {}
+  bool operator==(const StackFrame &) const = default;
 
   llvm::Function *function() const noexcept { return CurrentFunction; }
   std::uint64_t id() const noexcept { return Id; }
@@ -96,6 +100,11 @@ public:
   loopActivations() const noexcept {
     return LoopActivations;
   }
+  bool sameLayout(const StackFrame &Other) const;
+  bool mergeLocalsFrom(const StackFrame &Other, const ProgramCounter &At,
+                       const llvm::DominatorTree &Dominators,
+                       const ExprRef &Guard, ExprContext &Expressions,
+                       std::size_t MaxPointerCandidates);
 
 private:
   std::uint64_t Id = 0;
@@ -115,6 +124,7 @@ public:
     std::uint64_t ObjectId = 0;
     ExprRef Offset;
     std::uint64_t Size = 0;
+    bool operator==(const MemoryRead &) const = default;
   };
   ExecutionState(std::uint64_t Id, llvm::Function *Function);
 
@@ -122,6 +132,10 @@ public:
   void setId(std::uint64_t NewId) noexcept { Id = NewId; }
   unsigned depth() const noexcept { return Depth; }
   void setDepth(unsigned NewDepth) noexcept { Depth = NewDepth; }
+  std::size_t representedPaths() const noexcept { return RepresentedPaths; }
+  void setRepresentedPaths(std::size_t Count) noexcept {
+    RepresentedPaths = Count;
+  }
   std::uint64_t executedInstructions() const noexcept {
     return ExecutedInstructions;
   }
@@ -200,10 +214,12 @@ public:
   const std::vector<LoopDiagnostic> &loopHistory() const noexcept {
     return LoopHistory;
   }
+  bool canMergeWith(const ExecutionState &Other) const;
 
 private:
   std::uint64_t Id = 0;
   unsigned Depth = 0;
+  std::size_t RepresentedPaths = 1;
   std::uint64_t ExecutedInstructions = 0;
   ExecutionStateStatus Status = ExecutionStateStatus::Running;
   ProgramCounter PC;

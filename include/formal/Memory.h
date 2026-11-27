@@ -42,6 +42,7 @@ struct PointerCandidate final {
   std::shared_ptr<const MemoryObject> Object; // null denotes null pointer
   ExprRef Offset;                              // signed pointer-width offset
   ExprRef Guard;                               // Bool; null means unconditional
+  bool operator==(const PointerCandidate &) const = default;
 };
 
 struct PointerValue final {
@@ -49,12 +50,17 @@ struct PointerValue final {
   unsigned Width = 0;
   std::vector<PointerCandidate> Candidates;
   ExprRef Numeric; // optional exact numeric representation, never provenance
+  bool operator==(const PointerValue &) const = default;
 
   static PointerValue null(unsigned Width, ExprContext &Expressions,
                            unsigned AddressSpace = 0);
   static PointerValue object(std::shared_ptr<const MemoryObject> Object,
                              ExprRef Offset, ExprContext &Expressions,
                              unsigned AddressSpace = 0);
+  // The caller checks the candidate cap and pointer layout before selecting.
+  static PointerValue select(const ExprRef &Guard, const PointerValue &Left,
+                             const PointerValue &Right,
+                             ExprContext &Expressions);
 };
 
 struct PointerShadowEntry final {
@@ -64,6 +70,7 @@ struct PointerShadowEntry final {
   unsigned AddressSpace = 0;
   PointerValue Pointer;
   ExprRef Numeric;
+  bool operator==(const PointerShadowEntry &) const = default;
 };
 
 // Updates are immutable M1 nodes.  Only the small initialization map and
@@ -106,6 +113,7 @@ public:
   void invalidateShadows(ExprRef Offset, std::uint64_t Size);
 
 private:
+  friend class AddressSpace;
   std::shared_ptr<const MemoryObject> Object;
   UpdateList Bytes;
   std::vector<ExprRef> Initialized; // Bool per byte
@@ -157,6 +165,11 @@ public:
   const Entry *findConcrete(std::uint64_t Address) const noexcept;
   bool unbind(std::uint64_t Id);
   WriteHandle getWriteable(std::uint64_t Id, bool &Copied);
+  // Keep this address space on the true arm of Guard and Other on its false
+  // arm. A rejected merge leaves both address spaces unchanged.
+  std::optional<std::size_t>
+  mergeBytesFrom(const AddressSpace &Other, const ExprRef &Guard,
+                 ExprContext &Expressions, std::size_t MaxChangedBytes);
   const std::map<std::uint64_t, Entry> &entries() const noexcept {
     return Entries;
   }

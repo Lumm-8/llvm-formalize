@@ -1,0 +1,55 @@
+Internal ctest changing into directory: /home/dengshy/github/llvm-formalize/build-m10-checkpoints/release
+Test project /home/dengshy/github/llvm-formalize/build-m10-checkpoints/release
+      Start 33: FormalExecutor.M10.StateMerging
+      Start  9: FormalExecutor.Lit.M9
+ 1/12 Test  #9: FormalExecutor.Lit.M9 .........................   Passed    5.30 sec
+      Start 32: FormalExecutor.M10.IndependentOptimizations
+ 2/12 Test #32: FormalExecutor.M10.IndependentOptimizations ...   Passed    8.69 sec
+      Start 19: FormalMemory.Unit
+ 3/12 Test #19: FormalMemory.Unit .............................   Passed    2.73 sec
+      Start  7: FormalExecutor.Lit.M7
+ 4/12 Test  #7: FormalExecutor.Lit.M7 .........................   Passed    2.55 sec
+      Start 46: FormalExecutor.Lit.M4
+ 5/12 Test #46: FormalExecutor.Lit.M4 .........................   Passed    2.17 sec
+      Start  6: FormalExecutor.Lit.M6
+ 6/12 Test  #6: FormalExecutor.Lit.M6 .........................   Passed    2.55 sec
+      Start  4: FormalExecutor.Unit
+ 7/12 Test  #4: FormalExecutor.Unit ...........................   Passed    1.17 sec
+      Start  8: FormalExecutor.Lit.M8
+ 8/12 Test  #8: FormalExecutor.Lit.M8 .........................   Passed    0.78 sec
+      Start 75: FormalExecutor.M8.ResourceLimits
+ 9/12 Test #75: FormalExecutor.M8.ResourceLimits ..............   Passed    0.34 sec
+      Start 76: FormalExecutor.M8.LimitPolicies
+10/12 Test #76: FormalExecutor.M8.LimitPolicies ...............   Passed    0.22 sec
+      Start 31: FormalExecutor.M10.ComparisonPolicy
+11/12 Test #31: FormalExecutor.M10.ComparisonPolicy ...........   Passed    0.08 sec
+12/12 Test #33: FormalExecutor.M10.StateMerging ...............   Passed   28.16 sec
+
+100% tests passed, 0 tests failed out of 12
+
+Label Time Summary:
+aggregate         =   2.55 sec*proc (1 test)
+calls             =   2.55 sec*proc (1 test)
+differential      =  36.84 sec*proc (2 tests)
+executor          =   1.17 sec*proc (1 test)
+heap              =   2.55 sec*proc (1 test)
+ir                =  13.35 sec*proc (5 tests)
+limits            =   0.34 sec*proc (1 test)
+lit               =  13.35 sec*proc (5 tests)
+llvm-semantics    =   5.30 sec*proc (1 test)
+loop              =   1.34 sec*proc (3 tests)
+m10               =  36.92 sec*proc (3 tests)
+m3                =   1.17 sec*proc (1 test)
+m4                =   4.90 sec*proc (2 tests)
+m6                =   2.55 sec*proc (1 test)
+m7                =   2.55 sec*proc (1 test)
+m8                =   1.34 sec*proc (3 tests)
+m9                =   5.30 sec*proc (1 test)
+memory            =   7.45 sec*proc (3 tests)
+policy            =   0.22 sec*proc (1 test)
+property          =   2.73 sec*proc (1 test)
+stp               =   0.56 sec*proc (2 tests)
+unit              =   3.98 sec*proc (3 tests)
+z3                =  36.84 sec*proc (2 tests)
+
+Total Test time (real) =  28.16 sec

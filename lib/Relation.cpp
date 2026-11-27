@@ -95,6 +95,7 @@ static RelationArtifact exportRelationImpl(const ExecutionResult &Result,
   if (UnderApproximation)
     Artifact.Reason = "one or more feasible paths are incomplete";
   if (!Reference) {
+    Artifact.ExpressionDepth = 1;
     Artifact.SMTLib = SMTLibWriter::write(Expressions.boolean(false),
                                           "formal_relation", false);
     Artifact.SMTLib += "(assert |formal_relation|)\n(check-sat)\n";
@@ -155,6 +156,7 @@ static RelationArtifact exportRelationImpl(const ExecutionResult &Result,
     Relation = orExpr(Expressions, Relation, Clause);
   }
   try {
+    Artifact.ExpressionDepth = Relation->depth();
     Artifact.SMTLib = SMTLibWriter::write(Relation, "formal_relation", false);
     std::string MissingDeclarations;
     for (const std::string &Name : Allowed) {

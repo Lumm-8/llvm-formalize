@@ -42,6 +42,8 @@ struct ExecutorOptions {
   bool EnableMemory = true;
   bool EnableRegistration = false;
   bool ModelAllocationFailure = false;
+  bool EnableQueryCache = false;
+  bool EnableStateMerging = false;
 };
 
 class StateScheduler {
@@ -56,6 +58,7 @@ class DFSWorklist final : public StateScheduler {
 public:
   void schedule(ExecutionState State) override;
   bool empty() const noexcept override { return States.empty(); }
+  std::size_t size() const noexcept { return States.size(); }
   ExecutionState takeNext() override;
   void clear() noexcept { States.clear(); }
 

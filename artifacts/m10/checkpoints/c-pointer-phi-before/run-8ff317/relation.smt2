@@ -1,0 +1,6 @@
+(set-logic QF_BV)
+(declare-fun |input.x.0| () (_ BitVec 8))
+(declare-fun |output.y.0| () (_ BitVec 8))
+(define-fun |formal_relation| () Bool (ite (ite (ite (ite (ite (ite (ite (ite (ite (ite (= ((_ extract 0 0) |input.x.0|) (_ bv1 1)) true false) true false) true false) true false) true false) true false) true false) true false) (= |output.y.0| (_ bv10 8)) false) true (ite (ite (ite (ite (ite (ite (ite (ite (ite (not (= ((_ extract 0 0) |input.x.0|) (_ bv1 1))) true false) true false) true false) true false) true false) true false) true false) true false) (= |output.y.0| (_ bv20 8)) false)))
+(assert |formal_relation|)
+(check-sat)

@@ -1,9 +1,11 @@
-; RUN: %scalar-executor %s --entry diamond | %FileCheck %s --check-prefix=DIAMOND
+; RUN: %scalar-executor %s --entry diamond | %FileCheck %s --check-prefixes=DIAMOND,DIAMOND-%merge-mode
+; RUN: %scalar-executor %s --entry check_diamond | %FileCheck %s --check-prefix=CHECK-RESULT
 ; RUN: %scalar-executor %s --entry only_true | %FileCheck %s --check-prefix=TRUE
 ; RUN: %scalar-executor %s --entry only_false | %FileCheck %s --check-prefix=FALSE
 ; RUN: %scalar-executor %s --entry switches | %FileCheck %s --check-prefix=SWITCH
-; RUN: %scalar-executor %s --entry phis | %FileCheck %s --check-prefix=PHI
-; RUN: %scalar-executor %s --entry parallel_phis | %FileCheck %s --check-prefix=PARALLEL
+; RUN: %scalar-executor %s --entry phis | %FileCheck %s --check-prefixes=PHI,PHI-%merge-mode
+; RUN: %scalar-executor %s --entry parallel_phis | %FileCheck %s --check-prefixes=PARALLEL,PARALLEL-%merge-mode
+; RUN: %scalar-executor %s --entry check_parallel_phis | %FileCheck %s --check-prefix=CHECK-RESULT
 ; RUN: %scalar-executor %s --entry return_void | %FileCheck %s --check-prefix=VOID
 ; RUN: %scalar-executor %s --entry stable > %t.one
 ; RUN: %scalar-executor %s --entry stable > %t.two
@@ -24,8 +26,24 @@ join:
   ret i8 %r
 }
 ; DIAMOND: M3 status M3_EXECUTOR_COMPLETE
-; DIAMOND: M3 paths 2
+; DIAMOND-BASELINE: M3 paths 2
+; DIAMOND-MERGED: M3 paths 1
 ; DIAMOND: M3 stats states=2 forks=1 pruned=0
+
+define void @check_diamond(i8 %x) {
+  %actual = call i8 @diamond(i8 %x)
+  %c = icmp ult i8 %x, 10
+  %up = add i8 %x, 1
+  %down = sub i8 %x, 1
+  %expected = select i1 %c, i8 %up, i8 %down
+  %same = icmp eq i8 %actual, %expected
+  br i1 %same, label %ok, label %bad
+ok:
+  ret void
+bad:
+  unreachable
+}
+; CHECK-RESULT: M3 status M3_EXECUTOR_COMPLETE
 
 define i8 @only_true(i8 %x) {
 entry:
@@ -84,7 +102,8 @@ join:
   ret i8 %r
 }
 ; PHI: M3 status M3_EXECUTOR_COMPLETE
-; PHI: M3 paths 2
+; PHI-BASELINE: M3 paths 2
+; PHI-MERGED: M3 paths 1
 
 define i8 @parallel_phis(i1 %c, i8 %x, i8 %y) {
 entry:
@@ -100,7 +119,19 @@ join:
   ret i8 %r
 }
 ; PARALLEL: M3 status M3_EXECUTOR_COMPLETE
-; PARALLEL: M3 paths 2
+; PARALLEL-BASELINE: M3 paths 2
+; PARALLEL-MERGED: M3 paths 1
+
+define void @check_parallel_phis(i1 %c, i8 %x, i8 %y) {
+  %actual = call i8 @parallel_phis(i1 %c, i8 %x, i8 %y)
+  %expected = xor i8 %x, %y
+  %same = icmp eq i8 %actual, %expected
+  br i1 %same, label %ok, label %bad
+ok:
+  ret void
+bad:
+  unreachable
+}
 
 define void @return_void() {
 entry:

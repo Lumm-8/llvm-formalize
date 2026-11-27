@@ -42,6 +42,70 @@ std::shared_ptr<MemoryObject> object(std::uint64_t Id, std::uint64_t Size,
   return Result;
 }
 
+TEST(FormalMemory, GuardedMergePreservesBytesAndRejectsLivenessDifferences) {
+  ExprContext Expressions;
+  auto Storage = object(1, 1);
+  ExprRef Offset = Expressions.constant(64, 0);
+  ExprRef LeftValue = Expressions.constant(8, 17);
+  ExprRef RightValue = Expressions.constant(8, 42);
+  ExprRef Guard = Expressions.booleanSymbol("take_left");
+  auto Initial = std::make_shared<ObjectState>(Storage, Expressions, 64);
+  Initial->writeByte(Offset, LeftValue, Expressions);
+  AddressSpace Left;
+  ASSERT_TRUE(Left.bind(Storage, std::move(Initial)));
+  AddressSpace Right = Left;
+  bool Copied = false;
+  {
+    auto Writable = Right.getWriteable(Storage->Id, Copied);
+    ASSERT_TRUE(Copied);
+    Writable->writeByte(Offset, RightValue, Expressions);
+  }
+  EXPECT_FALSE(Left.mergeBytesFrom(Right, Guard, Expressions, 0));
+  EXPECT_EQ(Left.find(Storage->Id)->State->readByte(Offset, Expressions),
+            LeftValue);
+  ASSERT_EQ(Left.mergeBytesFrom(Right, Guard, Expressions, 1), 1U);
+  EXPECT_EQ(Left.find(Storage->Id)->State->readByte(Offset, Expressions),
+            Expressions.select(Guard, LeftValue, RightValue));
+  EXPECT_EQ(Right.find(Storage->Id)->State->readByte(Offset, Expressions),
+            RightValue);
+  {
+    auto Writable = Right.getWriteable(Storage->Id, Copied);
+    Writable->endLifetime();
+  }
+  EXPECT_FALSE(Left.mergeBytesFrom(Right, Guard, Expressions, 1));
+  EXPECT_TRUE(Left.find(Storage->Id)->State->live());
+  Right = Left;
+  auto Extra = object(2, 1);
+  ASSERT_TRUE(Right.bind(Extra,
+                         std::make_shared<ObjectState>(Extra, Expressions, 64)));
+  EXPECT_FALSE(Left.mergeBytesFrom(Right, Guard, Expressions, 2));
+  EXPECT_FALSE(Left.find(Extra->Id));
+}
+
+TEST(FormalMemory, GuardedMergeRejectsIncompatiblePointerShadows) {
+  ExprContext Expressions;
+  auto Storage = object(1, 8);
+  auto Target = object(2, 1);
+  auto Offset = Expressions.constant(64, 0);
+  auto Pointer = PointerValue::object(Target, Offset, Expressions);
+  auto Initial = std::make_shared<ObjectState>(Storage, Expressions, 64);
+  Initial->installShadow({0, 8, 64, 0, Pointer, Pointer.Numeric});
+  AddressSpace Left;
+  ASSERT_TRUE(Left.bind(Storage, std::move(Initial)));
+  AddressSpace Right = Left;
+  bool Copied = false;
+  {
+    auto Writable = Right.getWriteable(Storage->Id, Copied);
+    PointerValue Null = PointerValue::null(64, Expressions);
+    Writable->installShadow({0, 8, 64, 0, Null, Null.Numeric});
+  }
+  EXPECT_FALSE(Left.mergeBytesFrom(Right, Expressions.booleanSymbol("left"),
+                                   Expressions, 16));
+  auto *Shadow = Left.find(Storage->Id)->State->findShadow(0, 8, 64, 0);
+  ASSERT_NE(Shadow, nullptr);
+  EXPECT_EQ(Shadow->Pointer, Pointer);
+}
+
 class ScriptedSolver final : public Solver {
 public:
   explicit ScriptedSolver(std::vector<SolverStatus> Script,

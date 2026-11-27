@@ -1,0 +1,15 @@
+-- The CXX compiler identification is GNU 11.4.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Found ZLIB: /usr/lib/x86_64-linux-gnu/libz.so (found version "1.2.11") 
+-- Found LibXml2: /usr/lib/x86_64-linux-gnu/libxml2.so (found version "2.9.13") 
+-- Linker detection: unknown
+-- Performing Test FORMAL_STP_API_MATCHES_LOCK
+-- Performing Test FORMAL_STP_API_MATCHES_LOCK - Success
+-- Registering FormalPass as a pass plugin (static build: OFF)
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /home/dengshy/github/llvm-formalize/build-m10-checkpoints/baseline-sanitize

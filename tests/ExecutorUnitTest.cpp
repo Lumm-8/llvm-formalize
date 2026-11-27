@@ -86,6 +86,37 @@ std::unique_ptr<llvm::Module> parseModule(llvm::LLVMContext &Context,
   return llvm::parseAssemblyString(IR, Diagnostic, Context);
 }
 
+TEST(FormalExecutor, JoinCompatibilityRequiresMatchingDynamicContext) {
+  llvm::LLVMContext Context;
+  auto Module = parseModule(Context, "define void @entry() { ret void }");
+  ASSERT_NE(Module, nullptr);
+  auto *Function = Module->getFunction("entry");
+  ExecutionState Base(1, Function);
+  Base.frames().emplace_back(Function);
+  Base.frame().setId(2);
+  auto *Header = &Function->getEntryBlock();
+  Base.frame().loopActivations()[Header] = {3, 4, 5, "test"};
+  ExecutionState Other = Base;
+  EXPECT_TRUE(Base.canMergeWith(Other));
+
+  Other.frames().front().setContinuation(Base.pc());
+  EXPECT_FALSE(Base.canMergeWith(Other));
+  Other = Base;
+  Other.frame().setId(3);
+  EXPECT_FALSE(Base.canMergeWith(Other));
+  Other = Base;
+  ++Other.frame().loopActivations()[Header].Traversals;
+  EXPECT_FALSE(Base.canMergeWith(Other));
+  Other = Base;
+  Other.regions().emplace_back().Name = "extra";
+  EXPECT_FALSE(Base.canMergeWith(Other));
+  Other = Base;
+  Other.setStatus(ExecutionStateStatus::Incomplete);
+  EXPECT_FALSE(Base.canMergeWith(Other));
+  Other.setStatus(ExecutionStateStatus::Error);
+  EXPECT_FALSE(Base.canMergeWith(Other));
+}
+
 TEST(FormalExecutor, UnknownDirectCallKeepsCalleeAndCallSite) {
   static constexpr char IR[] = R"(
     declare i32 @unmodeled(i32)

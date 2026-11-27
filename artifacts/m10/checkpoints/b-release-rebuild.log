@@ -1,0 +1,19 @@
+[1/19] Building CXX object CMakeFiles/FormalSolverTest.dir/lib/Solver.cpp.o
+[2/19] Building CXX object CMakeFiles/FormalSolver.dir/lib/Solver.cpp.o
+[3/19] Linking CXX static library libFormalSolverTest.a
+[4/19] Linking CXX executable FormalSTPTestWorker
+[5/19] Linking CXX executable FormalSolverUnitTests
+[6/19] Building CXX object CMakeFiles/FormalSolver.dir/lib/STPSolver.cpp.o
+[7/19] Linking CXX static library libFormalSolver.a
+[8/19] Linking CXX executable FormalSTPWorker
+[9/19] Linking CXX shared module FormalPass.so
+[10/19] Linking CXX shared module FormalPassWrongHostDigest.so
+[11/19] Linking CXX executable FormalScalarExecutor
+[12/19] Linking CXX executable formal-check
+[13/19] Linking CXX executable FormalExecutorUnitTests
+[14/19] Linking CXX executable FormalMemoryBenchmark
+[15/19] Linking CXX executable FormalSolverQueryEmitter
+[16/19] Linking CXX executable FormalSolverDifferentialEmitter
+[17/19] Linking CXX executable FormalRelationUnitTests
+[18/19] Linking CXX executable FormalMemoryUnitTests
+[19/19] Linking CXX executable FormalExecutorDifferentialTests

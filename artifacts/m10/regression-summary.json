@@ -1,0 +1,43 @@
+{
+  "ctest": {
+    "build-m10-c-release": {
+      "build_type": "Release",
+      "sanitizers_enabled": false,
+      "latest_test_run_start": "Nov 24 11:06 CST",
+      "latest_test_run_end": "Nov 24 11:11 CST",
+      "latest_test_run_passed": 78,
+      "minimum_successful_runs_per_test": 4,
+      "last_test_log_sha256": "73ca3596403f9a03e81a7e3307dda065e69698f6835446c3394ab2273f9a52a1",
+      "ctest_history_sha256": "41985c0834a85689b21d0b81072b65b406ff4e6bd0f613038136d2f10d454e2a",
+      "optimized_cache_hits_in_retained_run_artifacts": 613
+    },
+    "build-m10-debug": {
+      "build_type": "Debug",
+      "sanitizers_enabled": false,
+      "latest_test_run_start": "Nov 24 11:25 CST",
+      "latest_test_run_end": "Nov 24 11:30 CST",
+      "latest_test_run_passed": 78,
+      "minimum_successful_runs_per_test": 2,
+      "last_test_log_sha256": "a7289281635bbf7b94b9c4544c903d6683f0e431a106085e61916964830525da",
+      "ctest_history_sha256": "442dda0d794f6c1eaeadee3d2d3f1b64fa73dd2e256a3fe6eb6ef8de3345d99a",
+      "optimized_cache_hits_in_retained_run_artifacts": 613
+    },
+    "build-m10-sanitize": {
+      "build_type": "Debug",
+      "sanitizers_enabled": true,
+      "latest_test_run_start": "Nov 24 11:59 CST",
+      "latest_test_run_end": "Nov 24 12:18 CST",
+      "latest_test_run_passed": 78,
+      "minimum_successful_runs_per_test": 2,
+      "last_test_log_sha256": "ebf1b926bd695550629be9d12e322dd98863735006aafdd646befede6f951160",
+      "ctest_history_sha256": "2d7f2b5fe05737d243c8a3d0b4592d403b7c8aa10cbb4cd26f90f7317bf3639a",
+      "optimized_cache_hits_in_retained_run_artifacts": 613
+    }
+  },
+  "release_ir_differential": {
+    "lit_fixtures_passed_per_mode": 56,
+    "equal_verdict_reason_and_failure_location_reports": 108,
+    "logically_equivalent_relations": 108,
+    "mutually_satisfiable_witness_pairs": 23
+  }
+}

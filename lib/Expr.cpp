@@ -1,6 +1,7 @@
 #include "formal/Expr.h"
 
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/ScopeExit.h"
 
 #include <algorithm>
 #include <atomic>
@@ -42,6 +43,20 @@ bool isOne(const ExprRef &Expression) {
 
 bool isAllOnes(const ExprRef &Expression) {
   return Expression->isConstant() && Expression->constantValue().isAllOnes();
+}
+
+bool isCommutative(ExprKind Kind) {
+  switch (Kind) {
+  case ExprKind::Add:
+  case ExprKind::Mul:
+  case ExprKind::And:
+  case ExprKind::Or:
+  case ExprKind::Xor:
+  case ExprKind::Eq:
+    return true;
+  default:
+    return false;
+  }
 }
 
 struct NodeKey {
@@ -139,12 +154,13 @@ UpdateNode::UpdateNode(ExprRef Index, ExprRef Value, UpdateNodeRef Next)
     : Index(std::move(Index)), Value(std::move(Value)), Next(std::move(Next)),
       Size(this->Next ? this->Next->size() + 1 : 1) {}
 
-Expr::Expr(std::uint64_t Owner, ExprKind Kind, Sort ExprSort, llvm::APInt Value,
-           std::string Name, unsigned Offset, unsigned Depth,
+Expr::Expr(std::uint64_t Owner, std::size_t Ordinal, ExprKind Kind,
+           Sort ExprSort, llvm::APInt Value, std::string Name, unsigned Offset,
+           unsigned Depth,
            std::vector<ExprRef> Operands,
            std::shared_ptr<const UpdateList> Updates)
-    : Owner(Owner), Kind(Kind), ExprSort(ExprSort), Value(std::move(Value)),
-      Name(std::move(Name)), Offset(Offset), Depth(Depth),
+    : Owner(Owner), Ordinal(Ordinal), Kind(Kind), ExprSort(ExprSort),
+      Value(std::move(Value)), Name(std::move(Name)), Offset(Offset), Depth(Depth),
       Operands(std::move(Operands)), Updates(std::move(Updates)) {}
 
 unsigned Expr::width() const {
@@ -186,6 +202,7 @@ struct ExprContext::Impl {
 
   std::uint64_t Owner;
   ExprContextOptions Options;
+  unsigned ObservedDepth = 0;
   std::unordered_map<NodeKey, ExprRef, NodeKeyHash> Nodes;
   std::unordered_map<std::string, ArrayRef> Arrays;
   std::unordered_map<std::string, Sort> Names;
@@ -195,6 +212,19 @@ struct ExprContext::Impl {
 ExprContext::ExprContext(ExprContextOptions Options)
     : Implementation(std::make_unique<Impl>(Options)) {}
 ExprContext::~ExprContext() = default;
+
+const ExprContextOptions &ExprContext::options() const noexcept {
+  return Implementation->Options;
+}
+
+bool ExprContext::tryTransaction(llvm::function_ref<bool()> Attempt) {
+  auto Saved = std::make_unique<Impl>(*Implementation);
+  auto Rollback = llvm::make_scope_exit([&] { Implementation.swap(Saved); });
+  if (!Attempt())
+    return false;
+  Rollback.release();
+  return true;
+}
 
 void ExprContext::requireOwned(const ExprRef &Expression) const {
   if (!Expression)
@@ -235,6 +265,12 @@ ExprRef ExprContext::intern(ExprKind Kind, Sort ExprSort, llvm::APInt Value,
   unsigned SortWidth = ExprSort.isArray()       ? ExprSort.indexWidth()
                        : ExprSort.isBitVector() ? ExprSort.bitWidth()
                                                 : 1;
+  if (Implementation->Options.EnableRewriting && isCommutative(Kind) &&
+      Operands[0]->Ordinal > Operands[1]->Ordinal) {
+    // Creation order keeps canonicalization independent of heap addresses.
+    std::swap(Operands[0], Operands[1]);
+    std::swap(OperandKeys[0], OperandKeys[1]);
+  }
   NodeKey Key{Kind,
               ExprSort.kind(),
               SortWidth,
@@ -250,10 +286,12 @@ ExprRef ExprContext::intern(ExprKind Kind, Sort ExprSort, llvm::APInt Value,
   if (Implementation->Nodes.size() >= Implementation->Options.MaxNodes)
     throw std::length_error("expression node limit exceeded");
 
-  ExprRef Result(new Expr(Implementation->Owner, Kind, ExprSort,
-                          std::move(Value), std::move(Name), Offset, Depth,
-                          std::move(Operands), std::move(UpdatesValue)));
+  ExprRef Result(new Expr(
+      Implementation->Owner, Implementation->Nodes.size(), Kind, ExprSort,
+      std::move(Value), std::move(Name), Offset, Depth, std::move(Operands),
+      std::move(UpdatesValue)));
   Implementation->Nodes.emplace(std::move(Key), Result);
+  Implementation->ObservedDepth = std::max(Implementation->ObservedDepth, Depth);
   return Result;
 }
 
@@ -621,6 +659,16 @@ ExprRef ExprContext::select(ExprRef Condition, ExprRef TrueValue,
     return TrueValue;
   if (Condition->isConstant())
     return Condition->constantValue().isZero() ? FalseValue : TrueValue;
+  if (Implementation->Options.EnableRewriting) {
+    if (Condition->kind() == ExprKind::Not) {
+      Condition = Condition->operand(0);
+      std::swap(TrueValue, FalseValue);
+    }
+    if (TrueValue->sort().isBool() && TrueValue->isConstant() &&
+        FalseValue->isConstant())
+      return TrueValue->constantValue().isOne() ? Condition
+                                               : logicalNot(Condition);
+  }
   Sort ResultSort = TrueValue->sort();
   return intern(
       ExprKind::Select, ResultSort, llvm::APInt(1, 0), {}, 0,
@@ -703,6 +751,14 @@ ExprRef ExprContext::trunc(ExprRef Value, unsigned Width) {
 
 unsigned ExprContext::maxBitWidth() const noexcept {
   return Implementation->Options.MaxBitWidth;
+}
+
+unsigned ExprContext::maxDepth() const noexcept {
+  return Implementation->Options.MaxDepth;
+}
+
+unsigned ExprContext::observedDepth() const noexcept {
+  return Implementation->ObservedDepth;
 }
 
 std::size_t ExprContext::nodeCount() const noexcept {

@@ -19,10 +19,12 @@ struct AggregateValue final {
   std::vector<ExprRef> KnownMasks;
   std::vector<ExprRef> AddressSensitiveBytes;
   std::map<std::uint64_t, PointerShadowEntry> Shadows;
+  bool operator==(const AggregateValue &) const = default;
 };
 
 class SymbolicValue final {
 public:
+  bool operator==(const SymbolicValue &) const = default;
   explicit SymbolicValue(ExprRef BitVector, ExprRef Poison = nullptr)
       : Data(std::move(BitVector)), PoisonCondition(std::move(Poison)) {
     const ExprRef &Value = std::get<ExprRef>(Data);

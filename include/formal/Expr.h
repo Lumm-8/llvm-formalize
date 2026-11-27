@@ -2,6 +2,7 @@
 #define FORMAL_EXPR_H
 
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -138,12 +139,14 @@ public:
 
 private:
   friend class ExprContext;
-  Expr(std::uint64_t Owner, ExprKind Kind, Sort ExprSort, llvm::APInt Value,
-       std::string Name, unsigned Offset, unsigned Depth,
+  Expr(std::uint64_t Owner, std::size_t Ordinal, ExprKind Kind,
+       Sort ExprSort, llvm::APInt Value, std::string Name, unsigned Offset,
+       unsigned Depth,
        std::vector<ExprRef> Operands,
        std::shared_ptr<const UpdateList> Updates);
 
   const std::uint64_t Owner;
+  const std::size_t Ordinal;
   const ExprKind Kind;
   const Sort ExprSort;
   const llvm::APInt Value;
@@ -160,12 +163,14 @@ struct ExprContextOptions {
   std::size_t MaxNodes = 1U << 20;
   std::size_t MaxUpdates = 1U << 20;
   std::size_t MaxArrays = 1U << 20;
+  bool EnableRewriting = false;
 };
 
 class ExprContext final {
 public:
   explicit ExprContext(ExprContextOptions Options = {});
   ~ExprContext();
+  const ExprContextOptions &options() const noexcept;
   ExprContext(const ExprContext &) = delete;
   ExprContext &operator=(const ExprContext &) = delete;
 
@@ -211,11 +216,16 @@ public:
   ExprRef trunc(ExprRef Value, unsigned Width);
 
   unsigned maxBitWidth() const noexcept;
+  unsigned maxDepth() const noexcept;
+  unsigned observedDepth() const noexcept;
   std::size_t nodeCount() const noexcept;
   std::size_t updateCount() const noexcept;
   std::size_t arrayCount() const noexcept;
 
 private:
+  friend class ScalarExecutor;
+  // Any expressions created during an abandoned attempt must stay within it.
+  bool tryTransaction(llvm::function_ref<bool()> Attempt);
   struct Impl;
   std::unique_ptr<Impl> Implementation;
 

@@ -1,7 +1,9 @@
 #include "formal/Executor.h"
 #include "formal/ExternalFunctionModel.h"
+#include "formal/Relation.h"
 
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/Dominators.h"
@@ -22,6 +24,7 @@
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/Support/ModRef.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <chrono>
@@ -65,6 +68,23 @@ ExecutionState DFSWorklist::takeNext() {
 namespace {
 
 enum class QueryDisposition { Feasible, Infeasible, Incomplete, InternalError };
+
+// Keep the first occurrence of each conjunct when checking sibling prefixes.
+ConstraintSet feasibilityKey(const ConstraintSet &Constraints,
+                             const ExprRef &Guard) {
+  ConstraintSet Key;
+  Key.reserve(Constraints.size() + 1);
+  llvm::SmallPtrSet<const Expr *, 16> Seen;
+  auto Add = [&](const ExprRef &Term) {
+    if (!(Term->isConstant() && Term->constantValue().isOne()) &&
+        Seen.insert(Term.get()).second)
+      Key.push_back(Term);
+  };
+  for (const ExprRef &Constraint : Constraints)
+    Add(Constraint);
+  Add(Guard);
+  return Key;
+}
 
 struct QueryOutcome {
   QueryDisposition Disposition = QueryDisposition::InternalError;
@@ -336,6 +356,7 @@ struct ScalarExecutor::Impl {
   void reset() {
     RunStart = std::chrono::steady_clock::now();
     Worklist.clear();
+    QueryCache.reset();
     Paths.clear();
     Statistics = {};
     NextStateId = 1;
@@ -345,6 +366,29 @@ struct ScalarExecutor::Impl {
     NextLogicalBase = 0x10000;
     GlobalObjects.clear();
     LoopAnalyses.clear();
+  }
+
+  std::string queryCacheScope(const llvm::Function &Function) const {
+    std::string Scope;
+    llvm::raw_string_ostream Out(Scope);
+    if (const llvm::Module *Module = Function.getParent()) {
+      const auto &Triple = Module->getTargetTriple();
+      const auto &Layout = Module->getDataLayoutStr();
+      Out << Triple.size() << ':' << Triple << Layout.size() << ':' << Layout;
+    }
+    const auto &ExprOptions = Expressions.options();
+    Out << ":mayBeTrue:" << Options.MaxInstructionsPerState << ':'
+        << Options.MaxStates << ':' << Options.MaxPointerCandidates << ':'
+        << Options.MaxObjectBytes << ':' << Options.MaxCallDepth << ':'
+        << Options.DefaultLoopBound << ':' << Options.RequireLocalLoopBound
+        << ':' << toString(Options.LoopPolicy) << ':' << Options.MaxWallTimeMs
+        << ':' << Options.MaxSolverQueries << ':' << Options.SolverTimeoutMs
+        << ':' << Options.EnableMemory << ':' << Options.EnableRegistration
+        << ':' << Options.ModelAllocationFailure << ':' << TryStateMerging
+        << ':' << ExprOptions.MaxBitWidth << ':' << ExprOptions.MaxDepth
+        << ':' << ExprOptions.MaxNodes << ':' << ExprOptions.MaxUpdates
+        << ':' << ExprOptions.MaxArrays << ':' << ExprOptions.EnableRewriting;
+    return Scope;
   }
 
   void append(PathResult Result) {
@@ -549,8 +593,10 @@ struct ScalarExecutor::Impl {
         return;
       }
       ++Statistics.SolverQueries;
+      ++Statistics.SolverBackendQueries;
       SolverResult Witness =
           SolverBackend.check(State.constraints().constraints());
+      Statistics.SolverTimeNs += Witness.Metadata.Elapsed.count();
       if (Witness.Status == SolverStatus::Timeout) {
         incomplete(State, IncompletenessReason::SolverTimeout,
                    "memory error witness query timed out", Location);
@@ -608,8 +654,34 @@ struct ScalarExecutor::Impl {
   }
 
   std::uint64_t allocateStateId() {
+    if (TryStateMerging) {
+      if (CurrentPathCount > Options.MaxStates - BaselineStateBound)
+        ReplayWithoutMerging = true;
+      else
+        BaselineStateBound += CurrentPathCount;
+      // Relation export builds a left-deep disjunction of completed paths.
+      // Reserve depth for each baseline clause as well as for the disjunction.
+      if (ProbedMerge && Options.EnableRegistration &&
+          BaselineStateBound > Expressions.maxDepth() / 2)
+        ReplayWithoutMerging = true;
+    }
     ++Statistics.StatesCreated;
     return NextStateId++;
+  }
+
+  SolverResult checkFeasibility(const ConstraintSet &Constraints,
+                                const ExprRef &Guard) {
+    ++Statistics.SolverBackendQueries;
+    bool Hit = false;
+    SolverResult Result = QueryCache
+                              ? QueryCache->mayBeTrue(Constraints, Guard, Hit)
+                              : SolverBackend.mayBeTrue(Constraints, Guard);
+    if (Hit) {
+      --Statistics.SolverBackendQueries;
+      ++Statistics.SolverCacheHits;
+    }
+    Statistics.SolverTimeNs += Result.Metadata.Elapsed.count();
+    return Result;
   }
 
   QueryOutcome query(const ExecutionState &State, const ExprRef &Guard) {
@@ -619,7 +691,7 @@ struct ScalarExecutor::Impl {
               "solver query limit reached"};
     ++Statistics.SolverQueries;
     SolverResult Result =
-        SolverBackend.mayBeTrue(State.constraints().constraints(), Guard);
+        checkFeasibility(State.constraints().constraints(), Guard);
     switch (Result.Status) {
     case SolverStatus::Sat:
       if (!Result.Truth || !*Result.Truth)
@@ -1502,6 +1574,143 @@ struct ScalarExecutor::Impl {
     return true;
   }
 
+  bool mergeArmIsStraightLine(const llvm::BasicBlock &Arm) const {
+    constexpr unsigned MaxArmInstructions = 16;
+    if (Arm.size() > MaxArmInstructions)
+      return false;
+    for (const llvm::Instruction &Instruction : Arm) {
+      switch (Instruction.getOpcode()) {
+      case llvm::Instruction::Br:
+      case llvm::Instruction::Add:
+      case llvm::Instruction::Sub:
+      case llvm::Instruction::Mul:
+      case llvm::Instruction::And:
+      case llvm::Instruction::Or:
+      case llvm::Instruction::Xor:
+      case llvm::Instruction::Trunc:
+      case llvm::Instruction::ZExt:
+      case llvm::Instruction::SExt:
+        if (Instruction.hasPoisonGeneratingFlags())
+          return false;
+        break;
+      case llvm::Instruction::Store: {
+        const auto &Store = llvm::cast<llvm::StoreInst>(Instruction);
+        if (!Store.isSimple() ||
+            !Store.getValueOperand()->getType()->isIntegerTy())
+          return false;
+        break;
+      }
+      default:
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool advanceMergeArm(ExecutionState &State, llvm::BasicBlock *Join) {
+    while (State.pc().block() != Join) {
+      const auto Pending = Worklist.size();
+      const auto Finished = Paths.size();
+      const auto Created = Statistics.StatesCreated;
+      executeInstruction(State);
+      if (Paths.size() != Finished || Statistics.StatesCreated != Created)
+        return false;
+      if (State.status() == ExecutionStateStatus::Scheduled &&
+          Worklist.size() == Pending + 1)
+        State = Worklist.takeNext();
+      if (State.status() != ExecutionStateStatus::Running ||
+          Worklist.size() != Pending)
+        return false;
+    }
+    executePHIs(State);
+    return State.status() == ExecutionStateStatus::Running;
+  }
+
+  void tryMergeDiamond(const ExecutionState &Base,
+                       const std::vector<GuardedDestination> &Destinations,
+                       std::vector<ExecutionState> &Children) {
+    if (!TryStateMerging || ReplayWithoutMerging ||
+        (Options.EnableRegistration &&
+         BaselineStateBound > Expressions.maxDepth() / 2) ||
+        Children.size() != 2 || Destinations.size() != 2 ||
+        !llvm::isa<llvm::BranchInst>(Base.pc().instruction()) ||
+        Destinations[0].Guard->depth() > 128)
+      return;
+    auto *Left = Destinations[0].Destination;
+    auto *Right = Destinations[1].Destination;
+    auto *Source = Base.pc().block();
+    if (Left == Right || Left == Source || Right == Source ||
+        Left->getSinglePredecessor() != Source ||
+        Right->getSinglePredecessor() != Source)
+      return;
+    auto *L = llvm::dyn_cast<llvm::BranchInst>(Left->getTerminator());
+    auto *R = llvm::dyn_cast<llvm::BranchInst>(Right->getTerminator());
+    if (!L || !R || !L->isUnconditional() || !R->isUnconditional())
+      return;
+    // Both arms have exactly one exit to Join, so Join post-dominates this
+    // branch. Keep this local to one loop and off every loop backedge.
+    auto *Join = L->getSuccessor(0);
+    if (Join != R->getSuccessor(0) || Join == Left || Join == Right ||
+        Join == Source)
+      return;
+    const auto &Analysis = *LoopAnalyses.at(Base.pc().function());
+    const auto *Loop = Analysis.Loops.getLoopFor(Source);
+    if (Analysis.Loops.getLoopFor(Left) != Loop ||
+        Analysis.Loops.getLoopFor(Right) != Loop ||
+        Analysis.Loops.getLoopFor(Join) != Loop ||
+        (Loop && Loop->getHeader() == Join) ||
+        !mergeArmIsStraightLine(*Left) || !mergeArmIsStraightLine(*Right))
+      return;
+
+    ProbedMerge = true;
+    if (!advanceMergeArm(Children[0], Join) ||
+        !advanceMergeArm(Children[1], Join)) {
+      ReplayWithoutMerging = true;
+      return;
+    }
+    const ExecutionState &A = Children[0];
+    const ExecutionState &B = Children[1];
+    if (!A.canMergeWith(B) ||
+        Expressions.logicalNot(Destinations[0].Guard) != Destinations[1].Guard)
+      return;
+    const auto &Prefix = Base.constraints().constraints();
+    const ExprRef True = Expressions.boolean(true);
+    for (std::size_t Arm = 0; Arm < Children.size(); ++Arm)
+      if (feasibilityKey(Children[Arm].constraints().constraints(), True) !=
+          feasibilityKey(Prefix, Destinations[Arm].Guard))
+        return;
+
+    ExecutionState Merged = A;
+    const ExprRef &Guard = Destinations[0].Guard;
+    if (!Merged.frame().mergeLocalsFrom(B.frame(), Merged.pc(),
+                                        Analysis.Dominators, Guard, Expressions,
+                                        Options.MaxPointerCandidates))
+      return;
+    auto Copied = Merged.addressSpace().mergeBytesFrom(
+        B.addressSpace(), Guard, Expressions, /*MaxChangedBytes=*/16);
+    if (!Copied)
+      return;
+    // Both arms were SAT and carry only complementary guards on top of the
+    // shared prefix. The guarded values retain the branch distinction.
+    const auto ArmConstraints =
+        std::max(A.constraints().constraints().size(),
+                 B.constraints().constraints().size());
+    const std::uint64_t DepthLimit = Expressions.maxDepth();
+    // The compatibility test ignores redundant true and duplicate constraints,
+    // but the baseline exporter may still fold them into the path clause.
+    BaselineOmittedConstraints += std::min<std::uint64_t>(
+        ArmConstraints - Prefix.size(), DepthLimit - BaselineOmittedConstraints);
+    Merged.constraints() = Base.constraints();
+    Merged.setRepresentedPaths(A.representedPaths() + B.representedPaths());
+    Statistics.COWCopies += *Copied;
+    for (const auto &[Id, Entry] : Merged.addressSpace().entries())
+      Statistics.MaxUpdateListLength = std::max<std::uint64_t>(
+          Statistics.MaxUpdateListLength, Entry.State->bytes().size());
+    ++Statistics.StateMerges;
+    Children[0] = std::move(Merged);
+    Children.pop_back();
+  }
+
   void forkToDestinations(ExecutionState &State,
                           const std::vector<GuardedDestination> &Destinations) {
     const ExecutionState Base = State;
@@ -1558,6 +1767,7 @@ struct ScalarExecutor::Impl {
         Scheduled.push_back(std::move(Child));
     }
 
+    tryMergeDiamond(Base, Destinations, Scheduled);
     // Push in reverse logical order so the vector-backed worklist executes
     // the first LLVM successor/case first while retaining DFS behavior.
     for (auto Position = Scheduled.rbegin(); Position != Scheduled.rend();
@@ -2666,7 +2876,7 @@ struct ScalarExecutor::Impl {
                         "select pointer arms have different value kinds");
           return;
         }
-        PointerValue Result = TrueValue->pointer();
+        const PointerValue &Result = TrueValue->pointer();
         const PointerValue &Other = FalseValue->pointer();
         if (Result.Candidates.size() > Options.MaxPointerCandidates ||
             Other.Candidates.size() >
@@ -2683,25 +2893,10 @@ struct ScalarExecutor::Impl {
                      "select pointer arms have incompatible layouts");
           return;
         }
-        ExprRef Guard = toBool(*Condition);
-        ExprRef NotGuard = Expressions.logicalNot(Guard);
-        for (PointerCandidate &Candidate : Result.Candidates)
-          Candidate.Guard = Expressions.select(
-              Guard,
-              Candidate.Guard ? Candidate.Guard : Expressions.boolean(true),
-              Expressions.boolean(false));
-        for (PointerCandidate Candidate : Other.Candidates) {
-          Candidate.Guard = Expressions.select(
-              NotGuard,
-              Candidate.Guard ? Candidate.Guard : Expressions.boolean(true),
-              Expressions.boolean(false));
-          Result.Candidates.push_back(std::move(Candidate));
-        }
-        Result.Numeric = Result.Numeric && Other.Numeric
-                             ? Expressions.select(Guard, Result.Numeric,
-                                                  Other.Numeric)
-                             : nullptr;
-        bindResult(Select, State, SymbolicValue(std::move(Result)));
+        bindResult(Select, State,
+                   SymbolicValue(PointerValue::select(toBool(*Condition),
+                                                       Result, Other,
+                                                       Expressions)));
         return;
       }
       // Select is a value expression.  It never enters the state scheduler and
@@ -5833,8 +6028,16 @@ struct ScalarExecutor::Impl {
   }
 
   ExecutionResult run(llvm::Function &Function,
-                      llvm::ArrayRef<ArgumentBinding> Arguments) {
+                      llvm::ArrayRef<ArgumentBinding> Arguments,
+                      bool MergeStates = false) {
     reset();
+    TryStateMerging = MergeStates;
+    if (Options.EnableQueryCache && Options.MaxWallTimeMs == 0)
+      QueryCache = std::make_unique<FeasibilityCache>(
+          SolverBackend, queryCacheScope(Function));
+    ProbedMerge = ReplayWithoutMerging = false;
+    BaselineStateBound = CurrentPathCount = 1;
+    BaselineOmittedConstraints = 0;
     ExecutionState Initial(NextStateId++, &Function);
     Initial.frame().setId(NextFrameId++);
     Statistics.MaximumCallDepthObserved = 1;
@@ -5986,9 +6189,11 @@ struct ScalarExecutor::Impl {
           loopDiagnostic(Initial, Loop->getHeader(), Activation));
     }
     Worklist.schedule(std::move(Initial));
-    while (!Worklist.empty()) {
+    while (!Worklist.empty() && !ReplayWithoutMerging) {
       ExecutionState State = Worklist.takeNext();
-      while (State.status() == ExecutionStateStatus::Running) {
+      CurrentPathCount = State.representedPaths();
+      while (State.status() == ExecutionStateStatus::Running &&
+             !ReplayWithoutMerging) {
         try {
           executeInstruction(State);
         } catch (const MemoryModelException &Error) {
@@ -6053,6 +6258,7 @@ struct ScalarExecutor::Impl {
     }
     Result.Statistics = Statistics;
     Result.Statistics.ASTNodes = Expressions.nodeCount();
+    Result.Statistics.ASTDepth = Expressions.observedDepth();
     struct rusage Usage {};
     if (getrusage(RUSAGE_SELF, &Usage) == 0 && Usage.ru_maxrss >= 0)
       Result.Statistics.PeakResidentBytes =
@@ -6075,12 +6281,49 @@ struct ScalarExecutor::Impl {
     return Result;
   }
 
+  bool canExportMergedRelation(const ExecutionResult &Trial) {
+    // Use the execution depth, which still includes guards removed by
+    // merging. The exporter can add a level for each output equality, each
+    // conjunct in a path, and each path in the final disjunction. Even a true
+    // constraint can add a level after a nonconstant guard in baseline mode.
+    const std::uint64_t Limit = Expressions.maxDepth();
+    for (const PathResult &Path : Trial.Paths) {
+      std::uint64_t Depth = Trial.Statistics.ASTDepth;
+      auto Reserve = [&](std::uint64_t Levels) {
+        if (Depth > Limit || Levels > Limit - Depth)
+          return false;
+        Depth += Levels;
+        return true;
+      };
+      // CFG depth leaves room for branch guards absent from the merged path.
+      if (!Reserve(Path.Depth) || !Reserve(Path.Constraints.size()) ||
+          !Reserve(BaselineOmittedConstraints) ||
+          !Reserve(BaselineStateBound))
+        return false;
+      for (const auto &Region : Path.Regions) {
+        if (!Region.Input && !Reserve(Region.Size))
+          return false;
+      }
+      // One equality level above the deepest output byte.
+      if (!Reserve(1))
+        return false;
+    }
+    return exportRelation(Trial, Expressions).Complete;
+  }
+
   ExprContext &Expressions;
   Solver &SolverBackend;
   ExecutorOptions Options;
   DFSWorklist Worklist;
+  std::unique_ptr<FeasibilityCache> QueryCache;
   std::vector<PathResult> Paths;
   ExecutionStatistics Statistics;
+  bool TryStateMerging = false;
+  bool ProbedMerge = false;
+  bool ReplayWithoutMerging = false;
+  std::size_t BaselineStateBound = 1;
+  std::uint64_t BaselineOmittedConstraints = 0;
+  std::size_t CurrentPathCount = 1;
   std::uint64_t NextStateId = 1;
   std::uint64_t NextFrameId = 1;
   std::uint64_t NextActivationId = 1;
@@ -6102,7 +6345,47 @@ ScalarExecutor::~ScalarExecutor() = default;
 ExecutionResult
 ScalarExecutor::execute(llvm::Function &Function,
                         llvm::ArrayRef<ArgumentBinding> Arguments) {
-  return Implementation->run(Function, Arguments);
+  auto &Executor = *Implementation;
+  const auto Started = std::chrono::steady_clock::now();
+  auto RecordWallTime = [&](ExecutionResult &Result) {
+    Result.Statistics.WallTimeNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - Started).count();
+  };
+  std::uint64_t AbandonedBackendQueries = 0;
+  std::uint64_t AbandonedSolverTimeNs = 0;
+  if (Executor.Options.EnableStateMerging &&
+      Executor.Options.MaxWallTimeMs == 0 &&
+      Executor.Options.MaxSolverQueries == UINT64_MAX) {
+    ExecutionResult Trial;
+    if (Executor.Expressions.tryTransaction([&] {
+          Trial = Executor.run(Function, Arguments, /*MergeStates=*/true);
+          const bool RelationExportFailed =
+              Executor.Options.EnableRegistration &&
+              Trial.Statistics.StateMerges != 0 &&
+              Trial.Status == ExecutionStatus::Complete &&
+              !Executor.canExportMergedRelation(Trial);
+          if (Executor.ReplayWithoutMerging ||
+              RelationExportFailed ||
+              (Executor.ProbedMerge &&
+               (Trial.Status != ExecutionStatus::Complete ||
+                Trial.HasUnwindingAssumption || Trial.HasLoopPolicyError))) {
+            AbandonedBackendQueries = Trial.Statistics.SolverBackendQueries;
+            AbandonedSolverTimeNs = Trial.Statistics.SolverTimeNs;
+            Trial = {};
+            Executor.reset();
+            return false;
+          }
+          return true;
+        })) {
+      RecordWallTime(Trial);
+      return Trial;
+    }
+  }
+  ExecutionResult Result = Executor.run(Function, Arguments);
+  Result.Statistics.SolverBackendQueries += AbandonedBackendQueries;
+  Result.Statistics.SolverTimeNs += AbandonedSolverTimeNs;
+  RecordWallTime(Result);
+  return Result;
 }
 
 void InstructionExecutor::execute(ExecutionState &State) {

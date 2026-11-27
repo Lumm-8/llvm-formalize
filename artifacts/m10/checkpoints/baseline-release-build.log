@@ -1,0 +1,134 @@
+[1/134] Building CXX object CMakeFiles/FormalPass.dir/lib/FileDigest.cpp.o
+[2/134] Building CXX object CMakeFiles/FormalPass.dir/lib/FormalEntry.cpp.o
+[3/134] Building CXX object CMakeFiles/FormalPass.dir/lib/FormalPass.cpp.o
+[4/134] Building CXX object CMakeFiles/FormalPass.dir/lib/PreflightResult.cpp.o
+[5/134] Building CXX object CMakeFiles/FormalExpr.dir/lib/SMTLibWriter.cpp.o
+[6/134] Building CXX object CMakeFiles/formal_marker_runtime.dir/runtime/formal_marker_runtime.cpp.o
+[7/134] Linking CXX static library libformal_marker_runtime.a
+[8/134] Building CXX object CMakeFiles/FormalExpr.dir/lib/Expr.cpp.o
+[9/134] Linking CXX static library libFormalExpr.a
+[10/134] Building CXX object CMakeFiles/formal_replay_runtime.dir/runtime/formal_replay_runtime.cpp.o
+[11/134] Linking CXX static library libformal_replay_runtime.a
+[12/134] Building CXX object CMakeFiles/FormalSolver.dir/lib/Solver.cpp.o
+[13/134] Building CXX object CMakeFiles/FormalSTPWorker.dir/tools/STPWorkerMain.cpp.o
+[14/134] Building CXX object CMakeFiles/FormalExecutor.dir/lib/Constraints.cpp.o
+[15/134] Building CXX object CMakeFiles/FormalSolver.dir/lib/STPSolver.cpp.o
+[16/134] Linking CXX static library libFormalSolver.a
+[17/134] Linking CXX executable FormalSTPWorker
+[18/134] Building CXX object CMakeFiles/FormalExecutor.dir/lib/Memory.cpp.o
+[19/134] Building CXX object CMakeFiles/FormalExecutor.dir/lib/M5Artifacts.cpp.o
+[20/134] Building CXX object CMakeFiles/FormalExecutor.dir/lib/M5Run.cpp.o
+[21/134] Building CXX object CMakeFiles/FormalExecutor.dir/lib/Relation.cpp.o
+[22/134] Building CXX object CMakeFiles/FormalExecutor.dir/lib/Executor.cpp.o
+[23/134] Building CXX object CMakeFiles/FormalExecutor.dir/lib/Result.cpp.o
+[24/134] Building CXX object CMakeFiles/FormalExecutor.dir/lib/State.cpp.o
+[25/134] Linking CXX static library libFormalExecutor.a
+[26/134] Linking CXX shared module FormalPass.so
+[27/134] Building CXX object CMakeFiles/FormalScalarExecutor.dir/tools/ScalarExecutorMain.cpp.o
+[28/134] Building CXX object CMakeFiles/formal-check.dir/tools/ScalarExecutorMain.cpp.o
+[29/134] Linking CXX executable FormalScalarExecutor
+[30/134] Building CXX object CMakeFiles/FormalPassWrongHostDigest.dir/lib/FileDigest.cpp.o
+[31/134] Building CXX object CMakeFiles/formal-check.dir/lib/FormalEntry.cpp.o
+[32/134] Building CXX object CMakeFiles/FormalPassWrongHostDigest.dir/lib/FormalEntry.cpp.o
+[33/134] Linking CXX executable formal-check
+[34/134] Building CXX object CMakeFiles/FormalPassWrongHostDigest.dir/lib/PreflightResult.cpp.o
+[35/134] Building CXX object CMakeFiles/FormalPassWrongHostDigest.dir/lib/FormalPass.cpp.o
+[36/134] Linking CXX shared module FormalPassWrongHostDigest.so
+[37/134] Building CXX object CMakeFiles/FormalPassUnitTests.dir/lib/FileDigest.cpp.o
+[38/134] Building CXX object CMakeFiles/FormalGTest.dir/third-party/unittest/googletest/src/gtest-all.cc.o
+[39/134] Linking CXX static library libFormalGTest.a
+[40/134] Building CXX object CMakeFiles/FormalPassUnitTests.dir/lib/FormalEntry.cpp.o
+[41/134] Building CXX object CMakeFiles/FormalPassUnitTests.dir/tests/TestMain.cpp.o
+[42/134] Building CXX object CMakeFiles/FormalPassUnitTests.dir/tests/FormalPassUnitTest.cpp.o
+[43/134] Building CXX object CMakeFiles/FormalExprUnitTests.dir/tests/ExprUnitTest.cpp.o
+[44/134] Building CXX object CMakeFiles/FormalExprUnitTests.dir/tests/TestMain.cpp.o
+[45/134] Linking CXX executable FormalExprUnitTests
+[46/134] Building CXX object CMakeFiles/FormalSolverTest.dir/lib/Solver.cpp.o
+[47/134] Linking CXX executable FormalPassUnitTests
+[48/134] Building CXX object CMakeFiles/FormalSTPTestWorker.dir/tools/STPWorkerMain.cpp.o
+[49/134] Building CXX object CMakeFiles/FormalSolverTest.dir/lib/STPSolver.cpp.o
+[50/134] Linking CXX static library libFormalSolverTest.a
+[51/134] Building CXX object CMakeFiles/FormalExecutorUnitTests.dir/tests/ExecutorUnitTest.cpp.o
+[52/134] Linking CXX executable FormalSTPTestWorker
+[53/134] Building CXX object CMakeFiles/FormalExecutorUnitTests.dir/tests/TestMain.cpp.o
+[54/134] Building CXX object CMakeFiles/FormalSolverUnitTests.dir/tests/TestMain.cpp.o
+[55/134] Building CXX object CMakeFiles/FormalSolverUnitTests.dir/tests/SolverUnitTest.cpp.o
+[56/134] Linking CXX executable FormalSolverUnitTests
+[57/134] Building CXX object CMakeFiles/FormalM6LayoutProbe.dir/tests/M6LayoutProbe.cpp.o
+[58/134] Linking CXX executable FormalExecutorUnitTests
+[59/134] Building CXX object CMakeFiles/FormalM9FlagOracle.dir/tests/M9FlagOracle.cpp.o
+[60/134] Linking CXX executable FormalM9FlagOracle
+[61/134] Building CXX object CMakeFiles/FormalM6NativeBytes.dir/tests/M6NativeBytes.cpp.o
+[62/134] Linking CXX executable FormalM6NativeBytes
+[63/134] Linking CXX executable FormalM6LayoutProbe
+[64/134] Generating FormalM7AssertReplayFixture-main.cpp
+[65/134] Building CXX object CMakeFiles/FormalMemoryBenchmark.dir/tests/MemoryBenchmark.cpp.o
+[66/134] Building CXX object CMakeFiles/FormalSolverQueryEmitter.dir/tests/SolverQueryEmitter.cpp.o
+[67/134] Linking CXX executable FormalSolverQueryEmitter
+[68/134] Building CXX object CMakeFiles/FormalSolverDifferentialEmitter.dir/tests/SolverDifferentialEmitter.cpp.o
+[69/134] Linking CXX executable FormalSolverDifferentialEmitter
+[70/134] Linking CXX executable FormalMemoryBenchmark
+[71/134] Building CXX object CMakeFiles/FormalExprSMTEmitter.dir/tests/ExprSMTEmitter.cpp.o
+[72/134] Linking CXX executable FormalExprSMTEmitter
+[73/134] Building CXX object CMakeFiles/FormalRelationUnitTests.dir/tests/RelationUnitTest.cpp.o
+[74/134] Building CXX object CMakeFiles/FormalM7AssertReplayFixture.dir/tests/M7RuntimeErrorReplayFixture.cpp.o
+[75/134] Building CXX object CMakeFiles/FormalM7AssertReplayFixture.dir/FormalM7AssertReplayFixture-main.cpp.o
+[76/134] Building CXX object CMakeFiles/FormalRelationUnitTests.dir/tests/TestMain.cpp.o
+[77/134] Linking CXX executable FormalM7AssertReplayFixture
+[78/134] Generating FormalM4Replay
+[79/134] Linking CXX executable FormalRelationUnitTests
+[80/134] Building CXX object CMakeFiles/FormalMemoryUnitTests.dir/tests/TestMain.cpp.o
+[81/134] Compiling the independent M3 native differential oracle
+[82/134] Building CXX object CMakeFiles/FormalExecutorDifferentialTests.dir/tests/ExecutorDifferentialTest.cpp.o
+[83/134] Building CXX object CMakeFiles/FormalExecutorDifferentialTests.dir/tests/TestMain.cpp.o
+[84/134] Building CXX object CMakeFiles/FormalMemoryUnitTests.dir/tests/MemoryUnitTest.cpp.o
+[85/134] Linking CXX executable FormalExecutorDifferentialTests
+[86/134] Generating m5-replay-main.cpp
+[87/134] Building CXX object CMakeFiles/FormalM5ReplayFixture.dir/tests/M5ReplayFixture.cpp.o
+[88/134] Building CXX object CMakeFiles/FormalM5ReplayFixture.dir/m5-replay-main.cpp.o
+[89/134] Linking CXX executable FormalM5ReplayFixture
+[90/134] Generating m5-error-replay-main.cpp
+[91/134] Building CXX object CMakeFiles/FormalM5ErrorReplayFixture.dir/tests/M5ErrorReplayFixture.cpp.o
+[92/134] Building CXX object CMakeFiles/FormalM5ErrorReplayFixture.dir/m5-error-replay-main.cpp.o
+[93/134] Linking CXX executable FormalM5ErrorReplayFixture
+[94/134] Generating m7-heap-replay-main.cpp
+[95/134] Building CXX object CMakeFiles/FormalM7HeapReplayFixture.dir/tests/M7HeapReplayFixture.cpp.o
+[96/134] Building CXX object CMakeFiles/FormalM7HeapReplayFixture.dir/m7-heap-replay-main.cpp.o
+[97/134] Linking CXX executable FormalM7HeapReplayFixture
+[98/134] Generating m7-uaf-replay-main.cpp
+[99/134] Building CXX object CMakeFiles/FormalM7UAFReplayFixture.dir/tests/M7HeapReplayFixture.cpp.o
+[100/134] Building CXX object CMakeFiles/FormalM7UAFReplayFixture.dir/m7-uaf-replay-main.cpp.o
+[101/134] Linking CXX executable FormalM7UAFReplayFixture
+[102/134] Generating m7-invalid-free-replay-main.cpp
+[103/134] Building CXX object CMakeFiles/FormalM7InvalidFreeReplayFixture.dir/tests/M7HeapReplayFixture.cpp.o
+[104/134] Building CXX object CMakeFiles/FormalM7InvalidFreeReplayFixture.dir/m7-invalid-free-replay-main.cpp.o
+[105/134] Linking CXX executable FormalMemoryUnitTests
+[106/134] Generating m7-interior-replay-main.cpp
+[107/134] Building CXX object CMakeFiles/FormalM7InteriorReplayFixture.dir/tests/M7HeapReplayFixture.cpp.o
+[108/134] Building CXX object CMakeFiles/FormalM7InteriorReplayFixture.dir/m7-interior-replay-main.cpp.o
+[109/134] Linking CXX executable FormalM7InvalidFreeReplayFixture
+[110/134] Generating m7-realloc-uaf-replay-main.cpp
+[111/134] Building CXX object CMakeFiles/FormalM7ReallocUAFReplayFixture.dir/tests/M7HeapReplayFixture.cpp.o
+[112/134] Building CXX object CMakeFiles/FormalM7ReallocUAFReplayFixture.dir/m7-realloc-uaf-replay-main.cpp.o
+[113/134] Linking CXX executable FormalM7InteriorReplayFixture
+[114/134] Generating m7-stack-replay-main.cpp
+[115/134] Building CXX object CMakeFiles/FormalM7StackReplayFixture.dir/tests/M7StackReplayFixture.cpp.o
+[116/134] Building CXX object CMakeFiles/FormalM7StackReplayFixture.dir/m7-stack-replay-main.cpp.o
+[117/134] Linking CXX executable FormalM7ReallocUAFReplayFixture
+[118/134] Generating FormalM7OverlapMemcpyReplayFixture-main.cpp
+[119/134] Building CXX object CMakeFiles/FormalM7OverlapMemcpyReplayFixture.dir/tests/M7RuntimeErrorReplayFixture.cpp.o
+[120/134] Building CXX object CMakeFiles/FormalM7OverlapMemcpyReplayFixture.dir/FormalM7OverlapMemcpyReplayFixture-main.cpp.o
+[121/134] Linking CXX executable FormalM7StackReplayFixture
+[122/134] Generating FormalM7DoubleDeleteReplayFixture-main.cpp
+[123/134] Building CXX object CMakeFiles/FormalM7DoubleDeleteReplayFixture.dir/tests/M7RuntimeErrorReplayFixture.cpp.o
+[124/134] Building CXX object CMakeFiles/FormalM7DoubleDeleteReplayFixture.dir/FormalM7DoubleDeleteReplayFixture-main.cpp.o
+[125/134] Linking CXX executable FormalM7OverlapMemcpyReplayFixture
+[126/134] Generating FormalM7FreeNewReplayFixture-main.cpp
+[127/134] Building CXX object CMakeFiles/FormalM7FreeNewReplayFixture.dir/tests/M7RuntimeErrorReplayFixture.cpp.o
+[128/134] Building CXX object CMakeFiles/FormalM7FreeNewReplayFixture.dir/FormalM7FreeNewReplayFixture-main.cpp.o
+[129/134] Linking CXX executable FormalM7DoubleDeleteReplayFixture
+[130/134] Generating FormalM7AbortReplayFixture-main.cpp
+[131/134] Building CXX object CMakeFiles/FormalM7AbortReplayFixture.dir/tests/M7RuntimeErrorReplayFixture.cpp.o
+[132/134] Building CXX object CMakeFiles/FormalM7AbortReplayFixture.dir/FormalM7AbortReplayFixture-main.cpp.o
+[133/134] Linking CXX executable FormalM7FreeNewReplayFixture
+[134/134] Linking CXX executable FormalM7AbortReplayFixture

@@ -1,4 +1,4 @@
-# M0–M7 Soundness and Trust Boundary
+# M0–M10 Soundness and Trust Boundary
 
 ## Claim boundary
 
@@ -50,10 +50,10 @@ Preflight walks direct reachable callees through pointer casts. It admits only
 M7's named external models; any other external declaration, unresolved
 indirect call, inline assembly,
 atomics/fences, fixed/scalable vectors, floating point, exception-handling
-opcodes, freeze/poison/undef and every poison-generating annotation reported by
-LLVM (including disjoint, samesign, nneg and all GEP flags), non-default address
-spaces, unknown intrinsics and unsupported calling conventions produce
-`UNKNOWN` with exit 2. Opcode and intrinsic dispatch is an explicit manifest in
+opcodes, non-default address spaces, unknown intrinsics and unsupported
+calling conventions produce `UNKNOWN` with exit 2. M9 documents its supported
+freeze, poison, undef and poison-generating annotation subset below.
+Opcode and intrinsic dispatch is an explicit manifest in
 `docs/SUPPORT_MATRIX.md`; unknown entries do not fall through to VALIDATED.
 The same vector, floating-point and address-space type gates inspect every node
 of nested constant trees, not only an instruction's immediate operand type.
@@ -695,3 +695,56 @@ and M0–M8 regressions. A repeated M9 symbolic-call run produced byte-identical
 counterexample JSON and relation SMT. These checks do not cover the gated
 undef outside the direct small-freeze subset, wide freeze, or
 byte-memory poison semantics.
+
+## M10 optimization boundary
+
+The baseline is the default executor with local rewrites, cache, and
+merging disabled. Optimized expression construction uses commutative
+operand ordering and a bounded normalization of scalar Select. All
+transformations preserve sorts and bit widths. The executor propagates
+poison predicates separately from the payload. Undef uses and dynamic
+freeze choices retain the identities established by the baseline executor.
+
+A cache entry covers a complete feasibility conjunction within one run
+and one solver configuration. Duplicate conjuncts and Boolean true
+are irrelevant to satisfiability. Cache hits charge the logical query
+budget. SAT models are revalidated against the original constraints and
+target. An UNSAT hit requires the same normalized conjunction and
+configuration. UNKNOWN, timeouts, and failure results travel through the
+ordinary solver failure path.
+
+A guarded join requires complementary branch guards, a common prefix,
+and straight-line arms that reach the same instruction after evaluating
+PHIs from their own predecessors. For prefix P and branch guard g, the
+merged condition `(g ∧ (P ∧ g)) ∨ (¬g ∧ (P ∧ ¬g))` factors to P.
+Guarded Select reconstructs the branch-specific scalar, poison predicate,
+aggregate bytes, and memory bytes under P. Pointer alternatives retain
+their individual object identities, offsets, and guards under g and ¬g.
+The join requires matching pointer shadow maps, byte initialization and
+address-sensitivity metadata, and aggregate padding masks. It also
+requires matching live objects and layouts, dynamic call frames, loop
+activations and histories, registration sequence, and diagnostics.
+
+The join has budgets for guard depth, changed values and their bit widths,
+pointer candidates, changed-object extent, and update history. Allocations,
+lifetime operations, calls, and freeze choices inside the candidate arms
+are outside the straight-line probe. A failed probe or speculative result
+with errors, incomplete paths, or possible baseline resource failure
+replays with merging disabled. The logical result excludes abandoned
+work. Backend query counts, solver time, and wall time include it.
+
+The registered relation depth check reserves room for path constraints,
+branch guards, per-byte output equalities and conjunctions, and the
+disjunction of baseline paths. It starts from the maximum expression
+depth observed during execution, including expressions for discarded
+guards. Counting stored true constraints covers baseline clauses where
+they occur after a nonconstant guard, including guards discarded from
+diamond arms. Regressions cover two completed paths with 930 output
+bytes, budget pressure from discarded store guards, and a smaller
+output that still permits merging.
+
+The dual-mode verifier requires UNSAT for the XOR of each available pair
+of exported relations and each pair of error-condition disjunctions.
+It checks each exported counterexample under its own original path
+constraints. This evidence covers the tested IR and resource policies.
+Wall-clock deadline cutoffs can vary by instruction between runs.

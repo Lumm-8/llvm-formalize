@@ -22,6 +22,184 @@ using namespace formal;
 
 namespace {
 
+class CacheTestSolver final : public Solver {
+public:
+  SolverResult Next;
+  unsigned Requests = 0;
+  bool Throw = false;
+  bool Cacheable = true;
+  std::string Profile = "test solver 1, deadline policy";
+
+  std::optional<std::string> feasibilityCacheProfile() const override {
+    return Cacheable ? std::optional(Profile) : std::nullopt;
+  }
+  SolverResult mayBeTrue(const ConstraintSet &, const ExprRef &) override {
+    ++Requests;
+    if (Throw)
+      throw std::runtime_error("injected solver error");
+    return Next;
+  }
+  SolverResult check(const ConstraintSet &) override { return {}; }
+  SolverResult mustBeTrue(const ConstraintSet &, const ExprRef &) override {
+    return {};
+  }
+  SolverResult getValue(const ConstraintSet &, const ExprRef &) override {
+    return {};
+  }
+  SolverResult
+  getInitialValues(const ConstraintSet &,
+                   const std::vector<ArrayModelRequest> &) override {
+    return {};
+  }
+};
+
+TEST(FormalQueryCache, RevalidatesSatAndRequiresExactUnsat) {
+  ExprContext Context;
+  auto P = Context.booleanSymbol("p");
+  auto Q = Context.booleanSymbol("q");
+  auto True = Context.boolean(true);
+  CacheTestSolver Backend;
+  FeasibilityCache Cache(Backend, "x86-64 semantics");
+  bool Hit = false;
+
+  Backend.Next.Status = SolverStatus::Sat;
+  Backend.Next.Truth = true;
+  Backend.Next.SatisfyingModel = Model{{{"p", Sort::boolean(), llvm::APInt(1, 0)},
+                                         {"q", Sort::boolean(), llvm::APInt(1, 1)}},
+                                        {}};
+  Cache.mayBeTrue({P}, Q, Hit);
+  EXPECT_FALSE(Hit);
+  Cache.mayBeTrue({P}, Q, Hit);
+  EXPECT_FALSE(Hit);
+  Backend.Next.SatisfyingModel->Scalars.front().Value = llvm::APInt(1, 1);
+  Cache.mayBeTrue({P}, Q, Hit);
+  EXPECT_FALSE(Hit);
+  auto Sat = Cache.mayBeTrue({Q, True, P, Q}, P, Hit);
+  EXPECT_TRUE(Hit);
+  ASSERT_TRUE(Sat.SatisfyingModel);
+  EXPECT_EQ(Backend.Requests, 3U);
+
+  Backend.Next.Status = SolverStatus::Unsat;
+  Backend.Next.Truth = false;
+  Backend.Next.SatisfyingModel.reset();
+  auto NotP = Context.logicalNot(P);
+  Cache.mayBeTrue({P}, NotP, Hit);
+  EXPECT_FALSE(Hit);
+  Cache.mayBeTrue({NotP}, P, Hit);
+  EXPECT_TRUE(Hit);
+  Cache.mayBeTrue({P, Q}, NotP, Hit);
+  EXPECT_FALSE(Hit);
+  Cache.mayBeTrue({}, NotP, Hit);
+  EXPECT_FALSE(Hit);
+  Backend.Profile = "test solver 2, deadline policy";
+  Cache.mayBeTrue({P}, NotP, Hit);
+  EXPECT_FALSE(Hit);
+  FeasibilityCache OtherLayout(Backend, "aarch64 semantics");
+  OtherLayout.mayBeTrue({P}, NotP, Hit);
+  EXPECT_FALSE(Hit);
+}
+
+TEST(FormalQueryCache, BackendFailuresAreNeverRemembered) {
+  ExprContext Context;
+  auto P = Context.booleanSymbol("p");
+  CacheTestSolver Backend;
+  FeasibilityCache Cache(Backend, "test");
+  bool Hit = false;
+  Backend.Next.Truth = false;
+  for (auto Status : {SolverStatus::Unknown, SolverStatus::Timeout,
+                      SolverStatus::InternalError}) {
+    Backend.Next.Status = Status;
+    for (int Attempt = 0; Attempt < 2; ++Attempt) {
+      EXPECT_EQ(Cache.mayBeTrue({}, P, Hit).Status, Status);
+      EXPECT_FALSE(Hit);
+    }
+  }
+  Backend.Throw = true;
+  EXPECT_THROW(Cache.mayBeTrue({}, P, Hit), std::runtime_error);
+  EXPECT_FALSE(Hit);
+  Backend.Throw = false;
+  Backend.Cacheable = false;
+  Backend.Next.Status = SolverStatus::Unsat;
+  for (int Attempt = 0; Attempt < 2; ++Attempt) {
+    EXPECT_EQ(Cache.mayBeTrue({}, P, Hit).Status, SolverStatus::Unsat);
+    EXPECT_FALSE(Hit);
+  }
+  EXPECT_EQ(Backend.Requests, 9U);
+}
+
+TEST(FormalQueryCache, STPProfileIncludesPolicyAndRespectsAuditHooks) {
+  STPSolverOptions Options;
+  STPSolver WithDeadline(Options);
+  const auto WithDeadlineProfile = WithDeadline.feasibilityCacheProfile();
+  ASSERT_TRUE(WithDeadlineProfile);
+  EXPECT_NE(WithDeadlineProfile->find(WithDeadline.backendVersion()),
+            std::string::npos);
+  Options.Timeout = STPSolverOptions::UnlimitedTimeout;
+  STPSolver WithoutDeadline(Options);
+  EXPECT_NE(WithDeadlineProfile, WithoutDeadline.feasibilityCacheProfile());
+  Options.MaxConflicts = 1;
+  STPSolver ConflictLimited(Options);
+  EXPECT_NE(WithoutDeadline.feasibilityCacheProfile(),
+            ConflictLimited.feasibilityCacheProfile());
+  Options.ExportAllQueries = true;
+  STPSolver Exporting(Options);
+  EXPECT_FALSE(Exporting.feasibilityCacheProfile());
+  Options.ExportAllQueries = false;
+  Options.AdditionalModelAudit = [](const ConstraintSet &, const Model &) {
+    return std::nullopt;
+  };
+  STPSolver Audited(Options);
+  EXPECT_FALSE(Audited.feasibilityCacheProfile());
+}
+
+TEST(FormalExprRewrites, APIntTruthTables) {
+  for (bool Rewrite : {false, true}) {
+    ExprContextOptions Options;
+    Options.EnableRewriting = Rewrite;
+    ExprContext Context(Options);
+    auto C = Context.booleanSymbol("condition");
+    auto NotC = Context.logicalNot(C);
+    auto T = Context.boolean(true);
+    auto F = Context.boolean(false);
+    for (unsigned Width : {1U, 2U, 3U, 4U, 65U, 128U}) {
+      auto X = Context.symbol(Width, "x" + std::to_string(Width));
+      auto Y = Context.symbol(Width, "y" + std::to_string(Width));
+      const std::array Terms{
+          Context.add(Y, X), Context.mul(Y, X), Context.bitAnd(Y, X),
+          Context.bitOr(Y, X), Context.bitXor(Y, X), Context.eq(Y, X),
+          Context.select(NotC, X, Y), Context.select(C, T, F),
+          Context.select(C, F, T)};
+      std::vector<llvm::APInt> Values;
+      if (Width <= 4) {
+        for (unsigned I = 0; I < (1U << Width); ++I)
+          Values.emplace_back(Width, I);
+      } else {
+        Values = {llvm::APInt(Width, 0), llvm::APInt(Width, 1),
+                  llvm::APInt::getSignedMinValue(Width),
+                  llvm::APInt::getSignedMaxValue(Width),
+                  llvm::APInt::getAllOnes(Width)};
+      }
+      for (const auto &A : Values)
+        for (const auto &B : Values)
+          for (bool Condition : {false, true}) {
+            const Model Assignment{{{X->symbolName(), X->sort(), A},
+                                    {Y->symbolName(), Y->sort(), B},
+                                    {C->symbolName(), C->sort(),
+                                     llvm::APInt(1, Condition)}}, {}};
+            const std::array Expected{
+                A + B, A * B, A & B, A | B, A ^ B, llvm::APInt(1, A == B),
+                Condition ? B : A, llvm::APInt(1, Condition),
+                llvm::APInt(1, !Condition)};
+            for (std::size_t I = 0; I < Terms.size(); ++I) {
+              std::string Error;
+              ASSERT_EQ(evaluate(Terms[I], Assignment, Error), Expected[I])
+                  << Error << " at width " << Width << ", term " << I;
+            }
+          }
+    }
+  }
+}
+
 STPSolver makeSolver(bool ExportAll = false) {
   STPSolverOptions Options;
   Options.FailureQueryDirectory = "m2-query-artifacts";

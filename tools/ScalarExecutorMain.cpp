@@ -37,7 +37,8 @@ void usage(const char *Program) {
                   "[--max-states N] [--max-time-ms N] "
                   "[--max-solver-queries N] "
                   "[--loop-limit-policy unknown|error|assume-exit] "
-                  "[--allocation-failures] "
+                  "[--allocation-failures] [--[no-]query-cache] "
+                  "[--[no-]expr-rewrite] [--[no-]state-merge] "
                   "[--m4 | --m5 --output-dir DIR]\n";
 }
 
@@ -166,6 +167,12 @@ int main(int argc, char **argv) {
 #endif
   std::string OutputDir;
   bool AllowUnversionedIR = false;
+  bool EnableQueryCache =
+      llvm::StringRef(std::getenv("FORMAL_QUERY_CACHE")) == "1";
+  bool EnableExpressionRewriting =
+      llvm::StringRef(std::getenv("FORMAL_EXPR_REWRITE")) == "1";
+  bool EnableStateMerging =
+      llvm::StringRef(std::getenv("FORMAL_STATE_MERGE")) == "1";
   for (int Index = 2; Index < argc; ++Index) {
     std::string Option = argv[Index];
     if ((Option == "--entry" || Option == "--timeout-ms" ||
@@ -235,6 +242,18 @@ int main(int argc, char **argv) {
       }
     } else if (Option == "--allocation-failures") {
       ModelAllocationFailure = true;
+    } else if (Option == "--query-cache") {
+      EnableQueryCache = true;
+    } else if (Option == "--no-query-cache") {
+      EnableQueryCache = false;
+    } else if (Option == "--expr-rewrite") {
+      EnableExpressionRewriting = true;
+    } else if (Option == "--no-expr-rewrite") {
+      EnableExpressionRewriting = false;
+    } else if (Option == "--state-merge") {
+      EnableStateMerging = true;
+    } else if (Option == "--no-state-merge") {
+      EnableStateMerging = false;
     } else if (Option == "--m4") {
       EnableMemory = true;
     } else if (Option == "--m5") {
@@ -310,7 +329,9 @@ int main(int argc, char **argv) {
     return 3;
   }
 
-  formal::ExprContext Expressions;
+  formal::ExprContextOptions ExprOptions;
+  ExprOptions.EnableRewriting = EnableExpressionRewriting;
+  formal::ExprContext Expressions(ExprOptions);
   formal::STPSolverOptions SolverOptions;
   SolverOptions.Timeout = std::chrono::milliseconds(TimeoutMs);
   SolverOptions.FailureQueryDirectory =
@@ -330,6 +351,8 @@ int main(int argc, char **argv) {
   ExecutorOptions.EnableMemory = EnableMemory;
   ExecutorOptions.EnableRegistration = EnableRegistration;
   ExecutorOptions.ModelAllocationFailure = ModelAllocationFailure;
+  ExecutorOptions.EnableQueryCache = EnableQueryCache;
+  ExecutorOptions.EnableStateMerging = EnableStateMerging;
   if (EnableRegistration &&
       (!Function->getReturnType()->isVoidTy() || Function->arg_size() != 0)) {
     llvm::errs() << "M5 entry must have signature void ()\n";

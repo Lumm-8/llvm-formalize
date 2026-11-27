@@ -30,8 +30,11 @@ option(FORMAL_REQUIRE_STP_TEST_ORACLE
 set(FORMAL_STP_TEST_LIBRARY_PATH "" CACHE PATH
   "Optional runtime library directory for the external STP test oracle")
 
-if(FORMAL_ENABLE_Z3 OR FORMAL_ENABLE_CUDD)
-  message(FATAL_ERROR "Z3 and CUDD remain outside the M2 build")
+if(FORMAL_ENABLE_Z3)
+  message(FATAL_ERROR "Z3 is configured as an external test oracle")
+endif()
+if(FORMAL_ENABLE_CUDD)
+  message(FATAL_ERROR "The optional M10 CUDD backend is deferred")
 endif()
 if(NOT FORMAL_ENABLE_STP)
   message(FATAL_ERROR
@@ -781,6 +784,32 @@ if(FORMAL_BUILD_TESTS)
       set_tests_properties(FormalExecutor.M9.SymbolicFlags PROPERTIES
         LABELS "m9;flags;differential;z3;ub")
       formal_set_sanitizer_test_environment(FormalExecutor.M9.SymbolicFlags)
+      add_test(NAME FormalExecutor.M10.ComparisonPolicy
+        COMMAND ${FORMAL_PYTHON3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_m10_comparison.py)
+      set_tests_properties(FormalExecutor.M10.ComparisonPolicy
+        PROPERTIES LABELS "m10;unit")
+      add_test(NAME FormalExecutor.M10.IndependentOptimizations
+        COMMAND ${FORMAL_PYTHON3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_m10_optimizations.py
+          --executor $<TARGET_FILE:FormalScalarExecutor>
+          --opt ${FORMAL_PINNED_OPT_EXECUTABLE}
+          --plugin $<TARGET_FILE:FormalPass>
+          --ir ${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmarks/m10/independent-optimizations.ll
+          --z3 ${FORMAL_Z3_EXECUTABLE})
+      set_tests_properties(FormalExecutor.M10.IndependentOptimizations
+        PROPERTIES LABELS "m10;differential;z3")
+      formal_set_sanitizer_test_environment(
+        FormalExecutor.M10.IndependentOptimizations)
+      add_test(NAME FormalExecutor.M10.StateMerging
+        COMMAND ${FORMAL_PYTHON3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_m10_merging.py
+          --executor $<TARGET_FILE:FormalScalarExecutor>
+          --fixtures ${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmarks/m10
+          --z3 ${FORMAL_Z3_EXECUTABLE})
+      set_tests_properties(FormalExecutor.M10.StateMerging
+        PROPERTIES LABELS "m10;differential;z3")
+      formal_set_sanitizer_test_environment(FormalExecutor.M10.StateMerging)
     elseif(FORMAL_REQUIRE_Z3_TEST_ORACLE)
       message(FATAL_ERROR
         "FORMAL_REQUIRE_Z3_TEST_ORACLE requires a runnable z3 executable")
@@ -1582,4 +1611,9 @@ if(FORMAL_BUILD_TESTS)
       formal_set_stp_test_environment(FormalExecutor.M8.ClangPragmaMetadata)
     endif()
   endif()
+  get_property(formal_tests DIRECTORY PROPERTY TESTS)
+  foreach(formal_test IN LISTS formal_tests)
+    set_property(TEST "${formal_test}" APPEND PROPERTY ENVIRONMENT_MODIFICATION
+      "FORMAL_TEST_CASE=set:${formal_test}")
+  endforeach()
 endif()

@@ -1,0 +1,26 @@
+[1/26] Building CXX object CMakeFiles/FormalExecutor.dir/lib/Memory.cpp.o
+[2/26] Building CXX object CMakeFiles/FormalExecutor.dir/lib/M5Run.cpp.o
+[3/26] Building CXX object CMakeFiles/FormalExecutor.dir/lib/M5Artifacts.cpp.o
+[4/26] Building CXX object CMakeFiles/FormalExecutor.dir/lib/Result.cpp.o
+[5/26] Building CXX object CMakeFiles/FormalExecutor.dir/lib/Relation.cpp.o
+[6/26] Building CXX object CMakeFiles/FormalPass.dir/lib/FormalPass.cpp.o
+[7/26] Building CXX object CMakeFiles/FormalExecutor.dir/lib/State.cpp.o
+[8/26] Building CXX object CMakeFiles/FormalScalarExecutor.dir/tools/ScalarExecutorMain.cpp.o
+[9/26] Building CXX object CMakeFiles/formal-check.dir/tools/ScalarExecutorMain.cpp.o
+[10/26] Building CXX object CMakeFiles/FormalPassWrongHostDigest.dir/lib/FormalPass.cpp.o
+[11/26] Building CXX object CMakeFiles/FormalExecutor.dir/lib/Executor.cpp.o
+[12/26] Linking CXX static library libFormalExecutor.a
+[13/26] Building CXX object CMakeFiles/FormalExecutorUnitTests.dir/tests/ExecutorUnitTest.cpp.o
+[14/26] Linking CXX shared module FormalPass.so
+[15/26] Building CXX object CMakeFiles/FormalExecutorDifferentialTests.dir/tests/ExecutorDifferentialTest.cpp.o
+[16/26] Linking CXX shared module FormalPassWrongHostDigest.so
+[17/26] Building CXX object CMakeFiles/FormalMemoryUnitTests.dir/tests/MemoryUnitTest.cpp.o
+[18/26] Linking CXX executable FormalScalarExecutor
+[19/26] Linking CXX executable formal-check
+[20/26] Linking CXX executable FormalExecutorUnitTests
+[21/26] Building CXX object CMakeFiles/FormalMemoryBenchmark.dir/tests/MemoryBenchmark.cpp.o
+[22/26] Linking CXX executable FormalMemoryUnitTests
+[23/26] Building CXX object CMakeFiles/FormalRelationUnitTests.dir/tests/RelationUnitTest.cpp.o
+[24/26] Linking CXX executable FormalRelationUnitTests
+[25/26] Linking CXX executable FormalMemoryBenchmark
+[26/26] Linking CXX executable FormalExecutorDifferentialTests

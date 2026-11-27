@@ -1,0 +1,42 @@
+Internal ctest changing into directory: /home/dengshy/github/llvm-formalize/build-m10-checkpoints/release
+Test project /home/dengshy/github/llvm-formalize/build-m10-checkpoints/release
+    Start  9: FormalExecutor.Lit.M9
+    Start 30: FormalExecutor.M9.SymbolicFlags
+    Start  3: FormalSolver.Unit
+    Start 32: FormalExecutor.M10.IndependentOptimizations
+1/8 Test  #3: FormalSolver.Unit .............................   Passed   11.35 sec
+    Start 29: FormalSolver.Cross.Z3
+2/8 Test #29: FormalSolver.Cross.Z3 .........................   Passed    3.90 sec
+    Start 75: FormalExecutor.M8.ResourceLimits
+3/8 Test #75: FormalExecutor.M8.ResourceLimits ..............   Passed    0.86 sec
+    Start  2: FormalExpr.Unit
+4/8 Test  #2: FormalExpr.Unit ...............................   Passed    0.15 sec
+    Start 31: FormalExecutor.M10.ComparisonPolicy
+5/8 Test #31: FormalExecutor.M10.ComparisonPolicy ...........   Passed    0.18 sec
+6/8 Test #30: FormalExecutor.M9.SymbolicFlags ...............   Passed   17.13 sec
+7/8 Test #32: FormalExecutor.M10.IndependentOptimizations ...   Passed   17.28 sec
+8/8 Test  #9: FormalExecutor.Lit.M9 .........................   Passed   20.66 sec
+
+100% tests passed, 0 tests failed out of 8
+
+Label Time Summary:
+differential      =  38.31 sec*proc (3 tests)
+expr              =   0.15 sec*proc (1 test)
+flags             =  17.13 sec*proc (1 test)
+ir                =  20.66 sec*proc (1 test)
+limits            =   0.86 sec*proc (1 test)
+lit               =  20.66 sec*proc (1 test)
+llvm-semantics    =  20.66 sec*proc (1 test)
+loop              =   0.86 sec*proc (1 test)
+m1                =   0.15 sec*proc (1 test)
+m10               =  17.46 sec*proc (2 tests)
+m2                =  15.25 sec*proc (2 tests)
+m8                =   0.86 sec*proc (1 test)
+m9                =  37.79 sec*proc (2 tests)
+solver            =  11.35 sec*proc (1 test)
+stp               =  16.11 sec*proc (3 tests)
+ub                =  17.13 sec*proc (1 test)
+unit              =  11.68 sec*proc (3 tests)
+z3                =  38.31 sec*proc (3 tests)
+
+Total Test time (real) =  20.67 sec

@@ -117,6 +117,7 @@ struct IRLocation {
   std::string SourceFile;
   unsigned SourceLine = 0;
   unsigned SourceColumn = 0;
+  bool operator==(const IRLocation &) const = default;
 };
 
 struct LoopDiagnostic {
@@ -132,6 +133,7 @@ struct LoopDiagnostic {
   std::string SuppressedFrom;
   std::string SuppressedTo;
   IRLocation BoundLocation;
+  bool operator==(const LoopDiagnostic &) const = default;
 };
 
 struct ExecutionEvent {
@@ -143,6 +145,7 @@ struct ExecutionEvent {
   std::uint64_t Size = 0;
   IRLocation Location;
   std::string Detail;
+  bool operator==(const ExecutionEvent &) const = default;
 };
 
 struct CallFrameInfo {
@@ -159,10 +162,15 @@ struct ExecutionStatistics {
   std::uint64_t ErrorPaths = 0;
   std::uint64_t InternalErrorPaths = 0;
   std::uint64_t Forks = 0;
+  std::uint64_t StateMerges = 0;
   std::uint64_t PrunedPaths = 0;
   std::uint64_t AssumptionPrunedPaths = 0;
   std::uint64_t ExecutedInstructions = 0;
-  std::uint64_t SolverQueries = 0;
+  std::uint64_t SolverQueries = 0; // Logical requests charged to the budget.
+  std::uint64_t SolverBackendQueries = 0;
+  std::uint64_t SolverCacheHits = 0;
+  std::uint64_t SolverTimeNs = 0;
+  std::uint64_t WallTimeNs = 0;
   std::uint64_t MemoryObjects = 0;
   std::vector<std::uint64_t> AllocatedObjectIds;
   std::uint64_t ObjectStates = 0;
@@ -176,6 +184,7 @@ struct ExecutionStatistics {
   std::uint64_t ResolutionSolverQueries = 0;
   std::uint64_t ResolutionSolverMicroseconds = 0;
   std::uint64_t ASTNodes = 0;
+  unsigned ASTDepth = 0;
   std::uint64_t MaxUpdateListLength = 0;
   std::uint64_t PeakResidentBytes = 0;
   std::size_t MaximumCallDepthObserved = 0;
@@ -213,6 +222,7 @@ struct PathResult {
     ConstraintSet RegistrationGuards;
     ExprRef CandidateGuard;
     std::vector<ExprRef> Bytes;
+    bool operator==(const RegisteredRegion &) const = default;
   };
   std::vector<RegisteredRegion> Regions;
 };

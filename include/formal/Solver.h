@@ -103,6 +103,12 @@ class Solver {
 public:
   virtual ~Solver() = default;
 
+  // Opt in only when the returned identity includes the backend version,
+  // options, and timeout policy and caching does not bypass observable hooks.
+  virtual std::optional<std::string> feasibilityCacheProfile() const {
+    return std::nullopt;
+  }
+
   virtual SolverResult check(const ConstraintSet &Constraints) = 0;
   virtual SolverResult mayBeTrue(const ConstraintSet &Constraints,
                                  const ExprRef &Expression) = 0;
@@ -113,6 +119,21 @@ public:
   virtual SolverResult
   getInitialValues(const ConstraintSet &Constraints,
                    const std::vector<ArrayModelRequest> &Arrays) = 0;
+};
+
+// A bounded, run-local cache for mayBeTrue, whose entire query is the
+// conjunction of the constraints and target. Scope identifies the target
+// layout and executor semantics. Other requests go directly to the solver.
+class FeasibilityCache final {
+public:
+  FeasibilityCache(Solver &Backend, std::string Scope);
+  ~FeasibilityCache();
+  SolverResult mayBeTrue(const ConstraintSet &Constraints, const ExprRef &Target,
+                         bool &Hit);
+
+private:
+  struct Impl;
+  std::unique_ptr<Impl> Implementation;
 };
 
 struct STPSolverOptions {
@@ -148,6 +169,7 @@ public:
   STPSolver(const STPSolver &) = delete;
   STPSolver &operator=(const STPSolver &) = delete;
 
+  std::optional<std::string> feasibilityCacheProfile() const override;
   SolverResult check(const ConstraintSet &Constraints) override;
   SolverResult mayBeTrue(const ConstraintSet &Constraints,
                          const ExprRef &Expression) override;

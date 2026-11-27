@@ -57,3 +57,43 @@ ctest --test-dir <build-dir> --output-on-failure -L '^m3$'
 ```
 
 The focused IR suite can also be run through the `FormalExecutor.Lit.M3` CTest.
+
+## Formal execution optimizations
+
+Unoptimized execution is the default. Enable query caching with
+`formal-check --query-cache` or the pass option `-formal-query-cache`.
+Enable expression rewriting independently with `formal-check --expr-rewrite`
+or the pass option `-formal-expr-rewrite`.
+Enable state merging with `formal-check --state-merge` or
+`-formal-state-merge` on the pass.
+The optional CUDD build remains deferred, with `FORMAL_ENABLE_CUDD=OFF`.
+
+For runs across the regression suite, set `FORMAL_QUERY_CACHE=1` and
+`FORMAL_EXPR_REWRITE=1`, and `FORMAL_STATE_MERGE=1`. The driver accepts
+`--no-query-cache`, `--no-expr-rewrite`, and `--no-state-merge` to override
+those settings. The pass options accept `=false` for the same purpose.
+
+State merging handles straight-line diamond arms with a common join after
+PHIs. It guards scalar, poison, aggregate, and pointer values and small
+compatible memory objects. Runs with an explicit wall-time or solver-query
+budget use the baseline worklist. A speculative error, incomplete path, or
+possible baseline state cap triggers a replay with merging disabled.
+
+The query budget counts logical requests, including cache hits. Registered
+execution records state and fork counts, merges, logical and backend
+queries, cache hits, AST node count and maximum depth, maximum UpdateList
+length, solver and wall time in nanoseconds, and peak resident bytes in
+`metrics.json`. Backend query count and solver time include abandoned
+attempts. Wall time measures executor work including replay.
+
+Use the Z3 oracle to check both modes of a configured test profile.
+
+```sh
+python3 tests/run_m10_dual_mode.py --build "$BUILD" --output "$AUDIT_ROOT" --z3 "$Z3"
+ctest --test-dir "$BUILD" -L m10 --output-on-failure
+python3 tests/benchmark_m10.py --help
+```
+
+Each benchmark uses at least five warmups and five measured runs per mode.
+The comparison records and benchmark samples are linked from
+[M10_CHECKPOINTS.md](docs/M10_CHECKPOINTS.md).

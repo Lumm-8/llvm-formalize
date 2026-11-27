@@ -46,6 +46,15 @@ cl::opt<bool> FormalRunM5(
     cl::desc("Execute the M5 registered byte relation after preflight"),
     cl::init(false));
 
+cl::opt<bool> FormalQueryCache(
+    "formal-query-cache", cl::desc("Cache decisive path feasibility queries"),
+    cl::init(StringRef(std::getenv("FORMAL_QUERY_CACHE")) == "1"));
+cl::opt<bool> FormalExprRewrite(
+    "formal-expr-rewrite", cl::desc("Enable optional expression rewrites"),
+    cl::init(StringRef(std::getenv("FORMAL_EXPR_REWRITE")) == "1"));
+cl::opt<bool> FormalStateMerge(
+    "formal-state-merge", cl::desc("Merge compatible states at CFG joins"),
+    cl::init(StringRef(std::getenv("FORMAL_STATE_MERGE")) == "1"));
 cl::opt<bool> FormalAllocationFailures(
     "formal-allocation-failures",
     cl::desc("Fork null allocation failure paths in M5 execution"),
@@ -245,7 +254,9 @@ public:
                << MoveError.message() << '\n';
         std::exit(4);
       }
-      formal::ExprContext Expressions;
+      formal::ExprContextOptions ExprOptions;
+      ExprOptions.EnableRewriting = FormalExprRewrite;
+      formal::ExprContext Expressions(ExprOptions);
       formal::STPSolverOptions SolverOptions;
       SolverOptions.FailureQueryDirectory = Directory / "queries";
       formal::STPSolver Solver(std::move(SolverOptions));
@@ -258,6 +269,8 @@ public:
       Options.MaxWallTimeMs = FormalMaxTimeMs;
       Options.MaxSolverQueries = FormalMaxSolverQueries;
       Options.ModelAllocationFailure = FormalAllocationFailures;
+      Options.EnableQueryCache = FormalQueryCache;
+      Options.EnableStateMerging = FormalStateMerge;
       formal::M5Analysis Analysis =
           formal::analyzeM5(*Validation.Entry, Expressions, Solver, Options);
       formal::M5ArtifactContext Context;

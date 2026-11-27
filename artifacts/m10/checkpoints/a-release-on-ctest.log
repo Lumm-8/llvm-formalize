@@ -1,0 +1,230 @@
+Internal ctest changing into directory: /home/dengshy/github/llvm-formalize/build-m10-checkpoints/release
+Test project /home/dengshy/github/llvm-formalize/build-m10-checkpoints/release
+      Start 12: FormalExecutor.M9.WideFlags
+      Start 11: FormalExecutor.M9.SmallWidthFlags
+ 1/78 Test #11: FormalExecutor.M9.SmallWidthFlags ...............   Passed   49.06 sec
+      Start 43: FormalPass.Lit.M0M1
+ 2/78 Test #43: FormalPass.Lit.M0M1 .............................   Passed   32.84 sec
+      Start 32: FormalExecutor.M10.StateMerging
+ 3/78 Test #32: FormalExecutor.M10.StateMerging .................   Passed   27.01 sec
+      Start 10: FormalExecutor.M9.Driver
+ 4/78 Test #10: FormalExecutor.M9.Driver ........................   Passed    4.73 sec
+      Start  9: FormalExecutor.Lit.M9
+ 5/78 Test  #9: FormalExecutor.Lit.M9 ...........................   Passed    5.26 sec
+      Start 62: FormalExecutor.M5.TruthTable
+ 6/78 Test #62: FormalExecutor.M5.TruthTable ....................   Passed    7.39 sec
+      Start 15: FormalExecutor.M6.NativeBytes
+ 7/78 Test #15: FormalExecutor.M6.NativeBytes ...................   Passed    8.58 sec
+      Start 30: FormalExecutor.M9.SymbolicFlags
+ 8/78 Test #30: FormalExecutor.M9.SymbolicFlags .................   Passed    7.16 sec
+      Start  3: FormalSolver.Unit
+ 9/78 Test  #3: FormalSolver.Unit ...............................   Passed    6.48 sec
+      Start 71: FormalExecutor.M8.PluginDriverLoopConsistency
+10/78 Test #71: FormalExecutor.M8.PluginDriverLoopConsistency ...   Passed    3.89 sec
+      Start 31: FormalExecutor.M10.IndependentOptimizations
+11/78 Test #31: FormalExecutor.M10.IndependentOptimizations .....   Passed    3.65 sec
+      Start 46: FormalExecutor.Lit.M5
+12/78 Test #46: FormalExecutor.Lit.M5 ...........................   Passed    3.55 sec
+      Start 19: FormalMemory.Unit
+13/78 Test #19: FormalMemory.Unit ...............................   Passed    2.92 sec
+      Start  7: FormalExecutor.Lit.M7
+14/78 Test  #7: FormalExecutor.Lit.M7 ...........................   Passed    2.64 sec
+      Start 73: FormalExecutor.M8.DynamicActivations
+15/78 Test #73: FormalExecutor.M8.DynamicActivations ............   Passed    0.68 sec
+      Start 37: FormalPass.Plugin.EntryDiagnostics
+16/78 Test #37: FormalPass.Plugin.EntryDiagnostics ..............   Passed    1.75 sec
+      Start 29: FormalSolver.Cross.Z3
+17/78 Test #29: FormalSolver.Cross.Z3 ...........................   Passed    2.04 sec
+      Start 72: FormalExecutor.M8.BackedgeContract
+18/78 Test #72: FormalExecutor.M8.BackedgeContract ..............   Passed    0.46 sec
+      Start 45: FormalExecutor.Lit.M4
+19/78 Test #45: FormalExecutor.Lit.M4 ...........................   Passed    2.02 sec
+      Start 22: FormalSolver.ProductionSurface
+20/78 Test #22: FormalSolver.ProductionSurface ..................   Passed    1.69 sec
+      Start 44: FormalExecutor.Lit.M3
+21/78 Test #44: FormalExecutor.Lit.M3 ...........................   Passed    1.53 sec
+      Start 55: FormalExecutor.M7.OverlapMemcpyReplay
+22/78 Test #55: FormalExecutor.M7.OverlapMemcpyReplay ...........   Passed    1.20 sec
+      Start  6: FormalExecutor.Lit.M6
+23/78 Test  #6: FormalExecutor.Lit.M6 ...........................   Passed    1.27 sec
+      Start 56: FormalExecutor.M7.DoubleDeleteReplay
+24/78 Test #56: FormalExecutor.M7.DoubleDeleteReplay ............   Passed    1.18 sec
+      Start 57: FormalExecutor.M7.FreeNewReplay
+25/78 Test #57: FormalExecutor.M7.FreeNewReplay .................   Passed    1.08 sec
+      Start 58: FormalExecutor.M7.AbortReplay
+26/78 Test #58: FormalExecutor.M7.AbortReplay ...................   Passed    0.96 sec
+      Start  4: FormalExecutor.Unit
+27/78 Test  #4: FormalExecutor.Unit .............................   Passed    1.14 sec
+      Start 60: FormalExecutor.M5.ErrorNativeReplay
+28/78 Test #60: FormalExecutor.M5.ErrorNativeReplay .............   Passed    0.91 sec
+      Start 53: FormalExecutor.M7.ReallocUseAfterFreeReplay
+29/78 Test #53: FormalExecutor.M7.ReallocUseAfterFreeReplay .....   Passed    1.13 sec
+      Start 59: FormalExecutor.M7.AssertReplay
+30/78 Test #59: FormalExecutor.M7.AssertReplay ..................   Passed    0.95 sec
+      Start 50: FormalExecutor.M7.UseAfterFreeReplay
+31/78 Test #50: FormalExecutor.M7.UseAfterFreeReplay ............   Passed    1.06 sec
+      Start 49: FormalExecutor.M7.HeapErrorReplay
+32/78 Test #49: FormalExecutor.M7.HeapErrorReplay ...............   Passed    1.12 sec
+      Start 51: FormalExecutor.M7.InvalidFreeReplay
+33/78 Test #51: FormalExecutor.M7.InvalidFreeReplay .............   Passed    1.03 sec
+      Start 52: FormalExecutor.M7.InteriorFreeReplay
+34/78 Test #52: FormalExecutor.M7.InteriorFreeReplay ............   Passed    1.07 sec
+      Start  8: FormalExecutor.Lit.M8
+35/78 Test  #8: FormalExecutor.Lit.M8 ...........................   Passed    0.88 sec
+      Start 70: FormalExecutor.M7.PluginConsistency
+36/78 Test #70: FormalExecutor.M7.PluginConsistency .............   Passed    0.65 sec
+      Start 38: FormalPass.Plugin.ExitCodes
+37/78 Test #38: FormalPass.Plugin.ExitCodes .....................   Passed    0.78 sec
+      Start 77: FormalExecutor.M8.NativeDifferential
+38/78 Test #77: FormalExecutor.M8.NativeDifferential ............   Passed    0.61 sec
+      Start 69: FormalExecutor.M5.OptPlugin
+39/78 Test #69: FormalExecutor.M5.OptPlugin .....................   Passed    0.63 sec
+      Start 54: FormalExecutor.M7.UseAfterReturnReplay
+40/78 Test #54: FormalExecutor.M7.UseAfterReturnReplay ..........   Passed    0.71 sec
+      Start 74: FormalExecutor.M8.ResourceLimits
+41/78 Test #74: FormalExecutor.M8.ResourceLimits ................   Passed    0.36 sec
+      Start 67: FormalExecutor.M7.CrossCallTruthTable
+42/78 Test #67: FormalExecutor.M7.CrossCallTruthTable ...........   Passed    0.53 sec
+      Start 66: FormalExecutor.M5.ClangO0TruthTable
+43/78 Test #66: FormalExecutor.M5.ClangO0TruthTable .............   Passed    0.53 sec
+      Start 61: FormalExecutor.M5.ArtifactClosure
+44/78 Test #12: FormalExecutor.M9.WideFlags .....................   Passed  195.18 sec
+      Start 75: FormalExecutor.M8.LimitPolicies
+45/78 Test #75: FormalExecutor.M8.LimitPolicies .................   Passed    0.28 sec
+      Start 63: FormalExecutor.M5.AssumeTruthTable
+46/78 Test #61: FormalExecutor.M5.ArtifactClosure ...............   Passed    0.47 sec
+      Start 17: FormalExecutor.M6.CompiledIR
+47/78 Test #63: FormalExecutor.M5.AssumeTruthTable ..............   Passed    0.41 sec
+      Start 64: FormalExecutor.M5.TupleTruthTable
+48/78 Test #17: FormalExecutor.M6.CompiledIR ....................   Passed    0.53 sec
+      Start 68: FormalExecutor.M5.FormalCheck
+49/78 Test #64: FormalExecutor.M5.TupleTruthTable ...............   Passed    0.45 sec
+      Start 78: FormalExecutor.M8.ClangPragmaMetadata
+50/78 Test #68: FormalExecutor.M5.FormalCheck ...................   Passed    0.45 sec
+      Start 41: FormalPass.Plugin.ConcurrentArtifacts
+51/78 Test #78: FormalExecutor.M8.ClangPragmaMetadata ...........   Passed    0.48 sec
+      Start 16: FormalExecutor.M7.ClangABI
+52/78 Test #41: FormalPass.Plugin.ConcurrentArtifacts ...........   Passed    0.45 sec
+      Start 13: FormalExecutor.M7.HeapEvents
+53/78 Test #16: FormalExecutor.M7.ClangABI ......................   Passed    0.41 sec
+      Start  1: FormalPass.Unit.EntryValidation
+54/78 Test #13: FormalExecutor.M7.HeapEvents ....................   Passed    0.39 sec
+      Start 42: FormalPass.EndToEnd.CBitcode
+55/78 Test  #1: FormalPass.Unit.EntryValidation .................   Passed    0.46 sec
+      Start 34: FormalPass.EndToEnd.IncompatibleClang
+56/78 Test #42: FormalPass.EndToEnd.CBitcode ....................   Passed    0.36 sec
+      Start 39: FormalPass.Plugin.StaleArtifact
+57/78 Test #34: FormalPass.EndToEnd.IncompatibleClang ...........   Passed    0.34 sec
+      Start 36: FormalPass.Plugin.RuntimeHostDigestMismatch
+58/78 Test #39: FormalPass.Plugin.StaleArtifact .................   Passed    0.28 sec
+      Start 28: FormalSolver.SMTLib.ReparseFailureQuery
+59/78 Test #36: FormalPass.Plugin.RuntimeHostDigestMismatch .....   Passed    0.30 sec
+      Start 21: FormalExecutor.Differential
+60/78 Test #28: FormalSolver.SMTLib.ReparseFailureQuery .........   Passed    0.26 sec
+      Start 65: FormalExecutor.M5.MultibyteRelation
+61/78 Test #21: FormalExecutor.Differential .....................   Passed    0.19 sec
+      Start 14: FormalExecutor.M7.NoundefAggregate
+62/78 Test #65: FormalExecutor.M5.MultibyteRelation .............   Passed    0.17 sec
+      Start 76: FormalExecutor.M8.InvalidMetadata
+63/78 Test #14: FormalExecutor.M7.NoundefAggregate ..............   Passed    0.15 sec
+      Start 35: FormalPass.Plugin.IncompatibleHostOpt
+64/78 Test #76: FormalExecutor.M8.InvalidMetadata ...............   Passed    0.14 sec
+      Start 26: FormalExpr.SMT.property
+65/78 Test #26: FormalExpr.SMT.property .........................   Passed    0.10 sec
+      Start 40: FormalPass.Plugin.ArtifactIOFailure
+66/78 Test #35: FormalPass.Plugin.IncompatibleHostOpt ...........   Passed    0.17 sec
+      Start 48: FormalExecutor.M5.ReplayRuntime
+67/78 Test #40: FormalPass.Plugin.ArtifactIOFailure .............   Passed    0.08 sec
+      Start 27: FormalExpr.SMT.simplification
+68/78 Test #48: FormalExecutor.M5.ReplayRuntime .................   Passed    0.08 sec
+      Start 25: FormalExpr.SMT.arrays
+69/78 Test #27: FormalExpr.SMT.simplification ...................   Passed    0.08 sec
+      Start 23: FormalExpr.SMT.syntax
+70/78 Test #23: FormalExpr.SMT.syntax ...........................   Passed    0.05 sec
+      Start  2: FormalExpr.Unit
+71/78 Test #25: FormalExpr.SMT.arrays ...........................   Passed    0.06 sec
+      Start 24: FormalExpr.SMT.semantics
+72/78 Test #24: FormalExpr.SMT.semantics ........................   Passed    0.06 sec
+      Start 33: FormalExpr.SMT.StableOutput
+73/78 Test  #2: FormalExpr.Unit .................................   Passed    0.07 sec
+      Start 18: FormalExecutor.M5.AssumeSolverUnknown
+74/78 Test #18: FormalExecutor.M5.AssumeSolverUnknown ...........   Passed    0.01 sec
+      Start 20: FormalMemory.Benchmark
+75/78 Test #20: FormalMemory.Benchmark ..........................   Passed    0.02 sec
+      Start 47: FormalExecutor.M5.RelationUnit
+76/78 Test #47: FormalExecutor.M5.RelationUnit ..................   Passed    0.00 sec
+      Start  5: FormalExecutor.M6.Layout
+77/78 Test  #5: FormalExecutor.M6.Layout ........................   Passed    0.00 sec
+78/78 Test #33: FormalExpr.SMT.StableOutput .....................   Passed    0.06 sec
+
+100% tests passed, 0 tests failed out of 78
+
+Label Time Summary:
+abi               =   0.56 sec*proc (2 tests)
+activation        =   0.68 sec*proc (1 test)
+aggregate         =   1.27 sec*proc (1 test)
+artifact          =   0.81 sec*proc (3 tests)
+artifacts         =   0.54 sec*proc (2 tests)
+asan              =  10.49 sec*proc (10 tests)
+assume            =   0.42 sec*proc (2 tests)
+backedge          =   0.46 sec*proc (1 test)
+benchmark         =   0.02 sec*proc (1 test)
+bytes             =   8.58 sec*proc (1 test)
+calls             =   3.82 sec*proc (3 tests)
+clang             =   3.12 sec*proc (6 tests)
+closure           =   0.48 sec*proc (2 tests)
+concurrency       =   0.45 sec*proc (1 test)
+determinism       =   0.06 sec*proc (1 test)
+diagnostic        =   0.26 sec*proc (1 test)
+differential      = 235.23 sec*proc (6 tests)
+driver            =   9.07 sec*proc (3 tests)
+end-to-end        =   0.70 sec*proc (2 tests)
+endian            =   0.17 sec*proc (1 test)
+executor          =   2.86 sec*proc (3 tests)
+exhaustive        =  49.25 sec*proc (2 tests)
+expr              =   0.07 sec*proc (1 test)
+flags             = 251.40 sec*proc (3 tests)
+heap              =  10.69 sec*proc (9 tests)
+integration       =   3.82 sec*proc (7 tests)
+ir                =  50.53 sec*proc (9 tests)
+layout            =   0.00 sec*proc (1 test)
+limits            =   0.36 sec*proc (1 test)
+lit               =  50.00 sec*proc (8 tests)
+llvm-semantics    =   5.26 sec*proc (1 test)
+loop              =   7.78 sec*proc (9 tests)
+m0                =  37.83 sec*proc (11 tests)
+m1                =  33.31 sec*proc (8 tests)
+m10               =  30.67 sec*proc (2 tests)
+m2                =  10.47 sec*proc (4 tests)
+m3                =   2.86 sec*proc (3 tests)
+m4                =   4.96 sec*proc (3 tests)
+m5                =  15.07 sec*proc (13 tests)
+m6                =  10.40 sec*proc (4 tests)
+m7                =  16.25 sec*proc (17 tests)
+m8                =   7.78 sec*proc (9 tests)
+m9                = 261.38 sec*proc (5 tests)
+memory            =   7.44 sec*proc (5 tests)
+metadata          =   0.62 sec*proc (2 tests)
+native            =  22.98 sec*proc (15 tests)
+negative          =   4.10 sec*proc (8 tests)
+plugin            =   5.17 sec*proc (3 tests)
+policy            =   0.28 sec*proc (1 test)
+preflight         =   5.80 sec*proc (3 tests)
+property          =   2.92 sec*proc (1 test)
+registration      =   3.55 sec*proc (1 test)
+relation          =  12.29 sec*proc (12 tests)
+replay            =  12.48 sec*proc (13 tests)
+smt               =   0.66 sec*proc (7 tests)
+solver            =   8.17 sec*proc (2 tests)
+stack             =   0.71 sec*proc (1 test)
+stp               =  28.58 sec*proc (21 tests)
+termination       =   1.91 sec*proc (2 tests)
+test-oracle       =   0.34 sec*proc (5 tests)
+toolchain         =   0.48 sec*proc (2 tests)
+tuple             =   0.45 sec*proc (1 test)
+ub                = 256.13 sec*proc (4 tests)
+ubsan             =   0.91 sec*proc (1 test)
+unit              =  11.09 sec*proc (8 tests)
+z3                =  39.86 sec*proc (4 tests)
+
+Total Test time (real) = 199.10 sec

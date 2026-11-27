@@ -28,6 +28,27 @@ PointerValue PointerValue::object(std::shared_ptr<const MemoryObject> Object,
           {{std::move(Object), std::move(Offset), nullptr}}, Numeric};
 }
 
+PointerValue PointerValue::select(const ExprRef &Guard, const PointerValue &Left,
+                                  const PointerValue &Right,
+                                  ExprContext &Expressions) {
+  PointerValue Result{Left.AddressSpace, Left.Width, {}, nullptr};
+  Result.Candidates.reserve(Left.Candidates.size() + Right.Candidates.size());
+  const auto True = Expressions.boolean(true);
+  const auto False = Expressions.boolean(false);
+  auto AddCandidates = [&](const PointerValue &Arm, const ExprRef &When) {
+    for (PointerCandidate Candidate : Arm.Candidates) {
+      Candidate.Guard = Expressions.select(
+          When, Candidate.Guard ? Candidate.Guard : True, False);
+      Result.Candidates.push_back(std::move(Candidate));
+    }
+  };
+  AddCandidates(Left, Guard);
+  AddCandidates(Right, Expressions.logicalNot(Guard));
+  if (Left.Numeric && Right.Numeric)
+    Result.Numeric = Expressions.select(Guard, Left.Numeric, Right.Numeric);
+  return Result;
+}
+
 ObjectState::ObjectState(std::shared_ptr<const MemoryObject> Object,
                          ExprContext &Expressions, unsigned IndexWidth)
     : Object(std::move(Object)),
@@ -388,6 +409,61 @@ AddressSpace::WriteHandle AddressSpace::getWriteable(std::uint64_t Id,
   return WriteHandle(
       std::const_pointer_cast<ObjectState>(It->second.State),
       It->second.ActiveWriters);
+}
+
+std::optional<std::size_t>
+AddressSpace::mergeBytesFrom(const AddressSpace &Other, const ExprRef &Guard,
+                             ExprContext &Expressions,
+                             std::size_t MaxChangedBytes) {
+  if (Entries.size() != Other.Entries.size())
+    return std::nullopt;
+  std::vector<std::pair<std::uint64_t, std::shared_ptr<const ObjectState>>>
+      Merged;
+  for (const auto &[Id, Entry] : Entries) {
+    const auto *RightEntry = Other.find(Id);
+    if (!RightEntry || Entry.Object != RightEntry->Object ||
+        *Entry.ActiveWriters || *RightEntry->ActiveWriters)
+      return std::nullopt;
+    if (Entry.State == RightEntry->State)
+      continue;
+    const ObjectState &Left = *Entry.State;
+    const ObjectState &Right = *RightEntry->State;
+    if (Left.Live != Right.Live || Left.IndexWidth != Right.IndexWidth ||
+        Left.Bytes.root() != Right.Bytes.root() ||
+        Left.Initialized != Right.Initialized ||
+        Left.KnownMasks != Right.KnownMasks ||
+        Left.AddressSensitiveBytes != Right.AddressSensitiveBytes ||
+        Left.Shadows != Right.Shadows)
+      return std::nullopt;
+    if (Left.Bytes.head() == Right.Bytes.head())
+      continue;
+    // Bound the materialized reads and updates. Large objects and long
+    // symbolic update histories may be cheaper to keep in separate states.
+    constexpr unsigned MaxUpdates = 64;
+    if (!Left.Live || Left.Object->ReadOnly ||
+        Left.Object->Size > MaxChangedBytes ||
+        Left.Bytes.size() > MaxUpdates || Right.Bytes.size() > MaxUpdates)
+      return std::nullopt;
+    MaxChangedBytes -= static_cast<std::size_t>(Left.Object->Size);
+    auto State = std::make_shared<ObjectState>(Left);
+    for (std::uint64_t Index = 0; Index < Left.Object->Size; ++Index) {
+      ExprRef Offset = Expressions.constant(Left.IndexWidth, Index);
+      ExprRef L = Left.readByte(Offset, Expressions);
+      ExprRef R = Right.readByte(Offset, Expressions);
+      if (L == R)
+        continue;
+      constexpr unsigned MaxByteDepth = 128;
+      if (L->depth() > MaxByteDepth || R->depth() > MaxByteDepth ||
+          State->Bytes.size() >= MaxUpdates)
+        return std::nullopt;
+      State->Bytes = Expressions.write(
+          State->Bytes, Offset, Expressions.select(Guard, L, R));
+    }
+    Merged.emplace_back(Id, std::move(State));
+  }
+  for (auto &[Id, State] : Merged)
+    Entries.at(Id).State = std::move(State);
+  return Merged.size();
 }
 
 } // namespace formal

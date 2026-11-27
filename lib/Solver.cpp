@@ -1,5 +1,7 @@
 #include "formal/Solver.h"
 
+#include "llvm/ADT/Hashing.h"
+
 #include <algorithm>
 #include <stdexcept>
 #include <unordered_map>
@@ -280,6 +282,112 @@ bool validateModel(const ConstraintSet &Constraints, const Model &Assignment,
     }
   }
   return true;
+}
+
+struct FeasibilityCache::Impl {
+  struct Key {
+    std::string Profile;
+    ConstraintSet Terms;
+    bool operator==(const Key &) const = default;
+  };
+  struct KeyHash {
+    std::size_t operator()(const Key &Query) const {
+      llvm::hash_code Hash = llvm::hash_value(Query.Profile);
+      for (const auto &Term : Query.Terms)
+        Hash = llvm::hash_combine(Hash, Term.get());
+      return Hash;
+    }
+  };
+
+  Impl(Solver &Backend, std::string Scope)
+      : Backend(Backend), Scope(std::move(Scope)) {}
+
+  std::optional<Key> key(const ConstraintSet &Constraints,
+                         const ExprRef &Target) const {
+    constexpr std::size_t MaxTerms = 64;
+    if (Constraints.size() >= MaxTerms)
+      return std::nullopt;
+    auto Profile = Backend.feasibilityCacheProfile();
+    if (!Profile)
+      return std::nullopt;
+    ConstraintSet Terms = Constraints;
+    Terms.push_back(Target);
+    if (std::any_of(Terms.begin(), Terms.end(), [](const ExprRef &Term) {
+          return !Term || !Term->sort().isBool();
+        }))
+      return std::nullopt;
+    std::erase_if(Terms, [](const ExprRef &Term) {
+      return Term->isConstant() && Term->constantValue().isOne();
+    });
+    std::sort(Terms.begin(), Terms.end(),
+              [](const ExprRef &Left, const ExprRef &Right) {
+                return std::less<const Expr *>{}(Left.get(), Right.get());
+              });
+    Terms.erase(std::unique(Terms.begin(), Terms.end()), Terms.end());
+    return Key{std::to_string(Scope.size()) + ":" + Scope + *Profile,
+               std::move(Terms)};
+  }
+
+  Solver &Backend;
+  const std::string Scope;
+  std::unordered_map<Key, SolverResult, KeyHash> Entries;
+};
+
+FeasibilityCache::FeasibilityCache(Solver &Backend, std::string Scope)
+    : Implementation(std::make_unique<Impl>(Backend, std::move(Scope))) {}
+
+FeasibilityCache::~FeasibilityCache() = default;
+
+SolverResult FeasibilityCache::mayBeTrue(const ConstraintSet &Constraints,
+                                        const ExprRef &Target, bool &Hit) {
+  auto &Cache = *Implementation;
+  Hit = false;
+  auto Key = Cache.key(Constraints, Target);
+  if (Key) {
+    const auto Entry = Cache.Entries.find(*Key);
+    if (Entry != Cache.Entries.end()) {
+      const auto &Stored = Entry->second;
+      Hit = Stored.Status == SolverStatus::Unsat;
+      if (Stored.SatisfyingModel) {
+        ConstraintSet Original = Constraints;
+        Original.push_back(Target);
+        std::string Error;
+        Hit = validateModel(Original, *Stored.SatisfyingModel, Error);
+      }
+      if (Hit)
+        return Stored;
+      Cache.Entries.erase(Entry);
+    }
+  }
+  SolverResult Result = Cache.Backend.mayBeTrue(Constraints, Target);
+  constexpr std::size_t MaxEntries = 1024;
+  constexpr std::size_t MaxModelValues = 64;
+  if (!Key || !Result.Truth || Cache.Entries.size() >= MaxEntries)
+    return Result;
+  SolverResult Stored;
+  Stored.Status = Result.Status;
+  Stored.Truth = Result.Truth;
+  if (Result.Status == SolverStatus::Unsat && !*Result.Truth) {
+    Cache.Entries.try_emplace(std::move(*Key), std::move(Stored));
+  } else if (Result.Status == SolverStatus::Sat && *Result.Truth &&
+             Result.SatisfyingModel) {
+    const Model &Assignment = *Result.SatisfyingModel;
+    if (Assignment.Scalars.size() <= MaxModelValues &&
+        Assignment.ArrayElements.size() <= MaxModelValues &&
+        std::all_of(Assignment.Scalars.begin(), Assignment.Scalars.end(),
+                    [](const ScalarModelValue &Value) {
+                      return Value.Value.getBitWidth() <= 256;
+                    }) &&
+        std::all_of(Assignment.ArrayElements.begin(),
+                    Assignment.ArrayElements.end(),
+                    [](const ArrayElementValue &Element) {
+                      return Element.Index.getBitWidth() <= 256;
+                    })) {
+      Stored.SatisfyingModel = Assignment;
+      Cache.Entries.try_emplace(std::move(*Key), std::move(Stored));
+    }
+  }
+  return Result;
 }
 
 } // namespace formal

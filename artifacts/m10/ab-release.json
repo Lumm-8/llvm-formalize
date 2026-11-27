@@ -1,0 +1,372 @@
+{
+  "independent-optimizations": {
+    "entry": "formal_top",
+    "fixture": "independent-optimizations.ll",
+    "fixture_sha256": "5beae5d9604c53eb7ae832afb8130719c10d703f112e2ba393630080e6c88108",
+    "modes": {
+      "baseline": {
+        "flags": [],
+        "median": {
+          "assumption_pruned_paths": 0,
+          "ast_nodes": 28,
+          "executed_instructions": 25,
+          "forks": 1,
+          "peak_resident_bytes": 24903680,
+          "pruned_paths": 16,
+          "solver_backend_queries": 10,
+          "solver_cache_hits": 0,
+          "solver_queries": 10,
+          "state_merges": 0,
+          "states_created": 2,
+          "wall_ms": 213.817868
+        },
+        "samples": [
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 28,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 24772608,
+            "pruned_paths": 16,
+            "solver_backend_queries": 10,
+            "solver_cache_hits": 0,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 211.018011
+          },
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 28,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 24903680,
+            "pruned_paths": 16,
+            "solver_backend_queries": 10,
+            "solver_cache_hits": 0,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 213.817868
+          },
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 28,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 24772608,
+            "pruned_paths": 16,
+            "solver_backend_queries": 10,
+            "solver_cache_hits": 0,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 221.71696
+          },
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 28,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 25034752,
+            "pruned_paths": 16,
+            "solver_backend_queries": 10,
+            "solver_cache_hits": 0,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 309.875184
+          },
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 28,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 24903680,
+            "pruned_paths": 16,
+            "solver_backend_queries": 10,
+            "solver_cache_hits": 0,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 206.049576
+          }
+        ]
+      },
+      "cache": {
+        "flags": [
+          "--query-cache"
+        ],
+        "median": {
+          "assumption_pruned_paths": 0,
+          "ast_nodes": 28,
+          "executed_instructions": 25,
+          "forks": 1,
+          "peak_resident_bytes": 24772608,
+          "pruned_paths": 16,
+          "solver_backend_queries": 4,
+          "solver_cache_hits": 6,
+          "solver_queries": 10,
+          "state_merges": 0,
+          "states_created": 2,
+          "wall_ms": 106.16166
+        },
+        "samples": [
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 28,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 24772608,
+            "pruned_paths": 16,
+            "solver_backend_queries": 4,
+            "solver_cache_hits": 6,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 99.901275
+          },
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 28,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 24903680,
+            "pruned_paths": 16,
+            "solver_backend_queries": 4,
+            "solver_cache_hits": 6,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 111.70078
+          },
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 28,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 24641536,
+            "pruned_paths": 16,
+            "solver_backend_queries": 4,
+            "solver_cache_hits": 6,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 103.416073
+          },
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 28,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 24772608,
+            "pruned_paths": 16,
+            "solver_backend_queries": 4,
+            "solver_cache_hits": 6,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 133.991284
+          },
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 28,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 24772608,
+            "pruned_paths": 16,
+            "solver_backend_queries": 4,
+            "solver_cache_hits": 6,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 106.16166
+          }
+        ]
+      },
+      "cache_rewrite": {
+        "flags": [
+          "--query-cache",
+          "--expr-rewrite"
+        ],
+        "median": {
+          "assumption_pruned_paths": 0,
+          "ast_nodes": 24,
+          "executed_instructions": 25,
+          "forks": 1,
+          "peak_resident_bytes": 24903680,
+          "pruned_paths": 16,
+          "solver_backend_queries": 4,
+          "solver_cache_hits": 6,
+          "solver_queries": 10,
+          "state_merges": 0,
+          "states_created": 2,
+          "wall_ms": 101.521539
+        },
+        "samples": [
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 24,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 24903680,
+            "pruned_paths": 16,
+            "solver_backend_queries": 4,
+            "solver_cache_hits": 6,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 152.084892
+          },
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 24,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 25034752,
+            "pruned_paths": 16,
+            "solver_backend_queries": 4,
+            "solver_cache_hits": 6,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 103.271442
+          },
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 24,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 24772608,
+            "pruned_paths": 16,
+            "solver_backend_queries": 4,
+            "solver_cache_hits": 6,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 101.521539
+          },
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 24,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 25034752,
+            "pruned_paths": 16,
+            "solver_backend_queries": 4,
+            "solver_cache_hits": 6,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 96.063031
+          },
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 24,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 24641536,
+            "pruned_paths": 16,
+            "solver_backend_queries": 4,
+            "solver_cache_hits": 6,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 98.07231
+          }
+        ]
+      },
+      "rewrite": {
+        "flags": [
+          "--expr-rewrite"
+        ],
+        "median": {
+          "assumption_pruned_paths": 0,
+          "ast_nodes": 24,
+          "executed_instructions": 25,
+          "forks": 1,
+          "peak_resident_bytes": 24772608,
+          "pruned_paths": 16,
+          "solver_backend_queries": 10,
+          "solver_cache_hits": 0,
+          "solver_queries": 10,
+          "state_merges": 0,
+          "states_created": 2,
+          "wall_ms": 218.958801
+        },
+        "samples": [
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 24,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 24641536,
+            "pruned_paths": 16,
+            "solver_backend_queries": 10,
+            "solver_cache_hits": 0,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 200.529776
+          },
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 24,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 24772608,
+            "pruned_paths": 16,
+            "solver_backend_queries": 10,
+            "solver_cache_hits": 0,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 241.984437
+          },
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 24,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 24903680,
+            "pruned_paths": 16,
+            "solver_backend_queries": 10,
+            "solver_cache_hits": 0,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 218.958801
+          },
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 24,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 25034752,
+            "pruned_paths": 16,
+            "solver_backend_queries": 10,
+            "solver_cache_hits": 0,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 327.082846
+          },
+          {
+            "assumption_pruned_paths": 0,
+            "ast_nodes": 24,
+            "executed_instructions": 25,
+            "forks": 1,
+            "peak_resident_bytes": 24641536,
+            "pruned_paths": 16,
+            "solver_backend_queries": 10,
+            "solver_cache_hits": 0,
+            "solver_queries": 10,
+            "state_merges": 0,
+            "states_created": 2,
+            "wall_ms": 209.008152
+          }
+        ]
+      }
+    }
+  }
+}

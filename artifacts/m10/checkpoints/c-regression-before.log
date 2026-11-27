@@ -1,0 +1,7 @@
+retained failing M5 queries and artifacts: /tmp/formal-m10-merge-48c396ah
+Traceback (most recent call last):
+  File "/home/dengshy/github/llvm-formalize/tests/check_m10_merging.py", line 102, in <module>
+    main()
+  File "/home/dengshy/github/llvm-formalize/tests/check_m10_merging.py", line 59, in main
+    assert metrics[name]["state_merges"] == expected_merges, (entry, metrics)
+AssertionError: ('pointer_phi', {'off': {'assumption_pruned_paths': 0, 'ast_depth': 4, 'ast_nodes': 20, 'executed_instructions': 21, 'forks': 1, 'max_update_list_length': 2, 'peak_resident_bytes': 25165824, 'pruned_paths': 24, 'solver_backend_queries': 2, 'solver_cache_hits': 0, 'solver_queries': 2, 'solver_time_ns': 22674833, 'state_merges': 0, 'states_created': 2, 'wall_time_ns': 23332115}, 'merge': {'assumption_pruned_paths': 0, 'ast_depth': 4, 'ast_nodes': 20, 'executed_instructions': 21, 'forks': 1, 'max_update_list_length': 2, 'peak_resident_bytes': 25296896, 'pruned_paths': 24, 'solver_backend_queries': 2, 'solver_cache_hits': 0, 'solver_queries': 2, 'solver_time_ns': 20621708, 'state_merges': 0, 'states_created': 2, 'wall_time_ns': 21553093}, 'all': {'assumption_pruned_paths': 0, 'ast_depth': 4, 'ast_nodes': 20, 'executed_instructions': 21, 'forks': 1, 'max_update_list_length': 2, 'peak_resident_bytes': 25296896, 'pruned_paths': 24, 'solver_backend_queries': 2, 'solver_cache_hits': 0, 'solver_queries': 2, 'solver_time_ns': 24517476, 'state_merges': 0, 'states_created': 2, 'wall_time_ns': 26755378}})
